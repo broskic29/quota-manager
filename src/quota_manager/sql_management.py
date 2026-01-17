@@ -132,10 +132,10 @@ def init_usage_db():
         cur.execute(
             """
         CREATE TABLE IF NOT EXISTS group_users (
-            group_id INTEGER NOT NULL,
             user_id INTEGER NOT NULL,
+            group_id INTEGER NOT NULL,
 
-            PRIMARY KEY (group_id, user_id),
+            PRIMARY KEY (user_id, group_id),
 
             FOREIGN KEY (group_id) REFERENCES groups(id)
                 ON DELETE CASCADE,
@@ -406,11 +406,11 @@ def insert_user_into_group_usage(
 
     cur.execute(
         """
-    INSERT OR IGNORE INTO group_users (group_id, user_id)
-    SELECT g.id, u.id
-    FROM groups g
-    JOIN users u ON u.username = ?
-    WHERE g.group_name = ?
+    INSERT OR IGNORE INTO group_users (user_id, group_id)
+    SELECT u.id, g.id
+    FROM users u
+    JOIN groups g ON g.group_name = ?
+    WHERE u.username = ?
     """,
         (username, group_name),
     )
@@ -1095,6 +1095,28 @@ def check_if_user_in_any_group(username, db_path=sqlh.USAGE_TRACKING_DB_PATH):
     if len(res) < 1:
         return False
     return True
+
+
+def check_which_group_user_is_in(username, db_path=sqlh.USAGE_TRACKING_DB_PATH):
+    con = sqlite3.connect(
+        db_path, timeout=30, isolation_level=None
+    )  # Connects to database
+    cur = con.cursor()
+    cur.execute(
+        """
+        SELECT group_name
+        FROM users u
+        JOIN group_users gu ON u.id = gu.user_id
+        JOIN groups g ON g.id = gu.group_id
+        WHERE u.username = ?
+        """,
+        (username,),
+    )
+    res = cur.fetchall()
+    con.close()
+    if len(res) < 1:
+        return None
+    return res
 
 
 def check_if_user_exists(
