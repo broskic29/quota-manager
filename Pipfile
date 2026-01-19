@@ -14,9 +14,11 @@ pip-nftables = "*"
 jsonschema = "*"
 waitress = "*"
 pyroute2 = "*"
+numpy = "*"
+tqdm = "*"
 quota_manager = {path = ".", editable = true}
+quota-manager = {file = ".", editable = true}
 
 [dev-packages]
 
 [requires]
-python_version = "3.11"
