@@ -509,7 +509,7 @@ def log_in_user(username, user_ip, user_mac):
                 log.debug(
                     f"New device detected for {username}. Clearing old IP address from system..."
                 )
-                remove_user_from_nftables(username)
+                remove_user_from_nftables(old_user_ip)
 
         # Clean up old IP addresses associated with a user
         try:
@@ -521,15 +521,15 @@ def log_in_user(username, user_ip, user_mac):
                 log.debug(
                     f"Multiple users detected for IP {user_ip}: logged in:{users_logged_in_for_ip_addr}, logged_out: {users_logged_out_for_ip_addr}. Logging out users..."
                 )
-                for username in users_logged_in_for_ip_addr:
-                    log_out_user(username)
+                for old_username in users_logged_in_for_ip_addr:
+                    log_out_user(old_username)
 
             if users_logged_out_for_ip_addr:
                 log.debug(
                     f"Multiple users detected for IP {user_ip}: logged in:{users_logged_in_for_ip_addr}, logged_out: {users_logged_out_for_ip_addr}. Wiping user from nft..."
                 )
-                for username in users_logged_out_for_ip_addr:
-                    remove_user_from_nftables(username)
+                for old_username in users_logged_out_for_ip_addr:
+                    remove_user_from_nftables(old_username)
 
             # Update ip, mac, logged_in status
             sqlm.login_user_usage(username, user_mac, user_ip)

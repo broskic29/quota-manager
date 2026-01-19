@@ -432,8 +432,10 @@ def login():
 
                 # iPhone CNA
                 elif "iPhone" in ua:
+                    msg = "\nIf you are on iPhone, please press the 'cancel' button in the top right, then select 'Use Without Internet'."
+                    session["message"] = msg
                     log.info(f"iPhone CNA detected for {user_mac}, returning 200")
-                    return Response(status=200)  # <-- returns blank 200 success
+                    return redirect(url_for("user_dashboard", username=username))
 
                 # Android CNA
                 elif "Android" in ua:
@@ -609,6 +611,8 @@ def android_generate_204():
 
     user_ip = request.remote_addr
 
+    error = None
+
     user_mac, error = flu.safe_call(
         qm.mac_from_ip,
         error,
@@ -630,6 +634,8 @@ def apple_hotspot_detect():
     session["captive"] = True
     user_ip = request.remote_addr
 
+    error = None
+
     user_mac, error = flu.safe_call(
         qm.mac_from_ip,
         error,
@@ -643,9 +649,12 @@ def apple_hotspot_detect():
 
     log.info(f"Login attempt from user at {user_mac}/{user_ip}.")
 
-    msg = "\nIf you are on iPhone, please press the 'cancel' button in the top right, then select 'Use Without Internet'."
-    session["message"] = msg
     return redirect(url_for("login"))
+
+
+@user_app.route("/donboscowifi")
+def splash_page_for_search():
+    return redirect("/login", 302)
 
 
 @user_app.route("/clients3.google.com")
