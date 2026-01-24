@@ -2,15 +2,12 @@ import threading
 import datetime as dt
 import logging
 
-from time import sleep
-
 import quota_manager.sql_management as sqlm
 import quota_manager.quota_management as qm
 
 from quota_manager.sqlite_helper_functions import UTC_OFFSET
 
-ACCOUNT_BILLING_DAY = 7
-UPDATE_INTERVAL = 1
+USAGE_UPDATE_INTERVAL = 1
 ONE_DAY = 1
 ONE_MONTH = 1
 
@@ -33,7 +30,7 @@ def monthly_delay_calc(now, tz):
     zero_hour = dt.datetime(now.year, now.month, now.day, tzinfo=tz)
 
     next_monthly = zero_hour + dt.timedelta(days=(32 - now.day))
-    next_monthly = next_monthly.replace(day=ACCOUNT_BILLING_DAY)
+    next_monthly = next_monthly.replace(day=qm.ACCOUNT_BILLING_DAY)
 
     log.info(f"Next monthly wipe set for {next_monthly}.")
 
@@ -42,7 +39,7 @@ def monthly_delay_calc(now, tz):
     return monthly_delay
 
 
-def wipe_scheduler(stop_event: threading.Event):
+def event_scheduler(stop_event: threading.Event):
     while not stop_event.is_set():
         tz = dt.timezone(dt.timedelta(hours=UTC_OFFSET))
         now = dt.datetime.now(tz)
@@ -52,26 +49,39 @@ def wipe_scheduler(stop_event: threading.Event):
 
         next_delay = min(daily_delay, monthly_delay)
 
-        sleep(next_delay.seconds)
+        if stop_event.wait(next_delay.total_seconds()):
+            break
 
         # After waking up, determine which tasks to run
         now = dt.datetime.now(tz)
 
-        if now.day == ACCOUNT_BILLING_DAY:
-            sqlm.usage_monthly_wipe()
-            log.info("Monthly wipe complete.")
+        if now.day == qm.ACCOUNT_BILLING_DAY:
+            monthly_events(now)
 
-        sqlm.usage_daily_wipe()
-        log.info("Daily wipe complete.")
+        daily_events(now)
 
-        qm.log_out_all_users()
-        log.info("All users logged out.")
 
-        qm.wipe_ip_neigh_db()
-        log.info("IP neigh db wiped.")
+def daily_events(now):
 
-        qm.reset_throttling_and_packet_dropping_all_users()
-        log.info("Throttling and packet dropping reset.")
+    qm.update_group_quotas(now, qm.ACCOUNT_BILLING_DAY)
+    log.info("Updated daily quotas for all groups.")
+
+    sqlm.usage_daily_wipe()
+    log.info("Daily wipe complete.")
+
+    qm.log_out_all_users()
+    log.info("All users logged out.")
+
+    qm.wipe_ip_neigh_db()
+    log.info("IP neigh db wiped.")
+
+    qm.reset_throttling_and_packet_dropping_all_users()
+    log.info("Throttling and packet dropping reset.")
+
+
+def monthly_events(now):
+    sqlm.usage_monthly_wipe()
+    log.info("Monthly wipe complete.")
 
 
 def usage_updater(stop_event: threading.Event):
@@ -79,26 +89,29 @@ def usage_updater(stop_event: threading.Event):
     quota_dict = {}
 
     while not stop_event.is_set():
-        sleep(UPDATE_INTERVAL)
-
-        if stop_event.is_set():
+        if stop_event.wait(USAGE_UPDATE_INTERVAL):
             break
 
-        log.debug("Updating user byte totals...")
-        usage_dict = qm.update_all_users_bytes()
-        log.debug(usage_dict)
+        try:
+            log.debug("Updating user byte totals...")
+            usage_dict = qm.update_all_users_bytes()
+            log.debug(usage_dict)
 
-        log.debug("Updating quota information for all users...")
-        quota_dict = qm.update_quota_information_all_users(quota_dict)
+            log.debug("Updating quota information for all users...")
+            quota_dict = qm.update_quota_information_all_users(quota_dict)
 
-        log.debug("Enforcing quotas for all users...")
-        qm.enforce_quotas_all_users(throttling=False)
+            log.debug("Enforcing quotas for all users...")
+            qm.enforce_quotas_all_users(throttling=False)
+        except Exception:
+            log.exception("usage_updater crashed during update loop.")
+            stop_event.set()
+            break
 
 
 def start_usage_tracking(stop_event: threading.Event):
     """Start the wipe scheduler and usage updater threads"""
     t_wipe_scheduler = threading.Thread(
-        target=wipe_scheduler, args=(stop_event,), daemon=True
+        target=event_scheduler, args=(stop_event,), daemon=True
     )
     t_usage_updater = threading.Thread(
         target=usage_updater, args=(stop_event,), daemon=True

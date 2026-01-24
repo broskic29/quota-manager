@@ -152,11 +152,15 @@ def safe_call(fn, error, msgs, *args, **kwargs):
     try:
         vals = fn(*args, **kwargs)
     except tuple(msgs) as e:
-        log.exception(msgs[type(e)])
-        return None, error_appender(error, msgs[type(e)])
+        if msgs[type(e)] is None:
+            log.exception(e)
+            return None, error_appender(error, e)
+        else:
+            log.exception(msgs[type(e)])
+            return None, error_appender(error, msgs[type(e)])
     except Exception as e:
-        log.exception(msgs["UndefinedException"])
-        return None, error_appender(error, msgs["UndefinedException"])
+        log.exception(msgs[UndefinedException])
+        return None, error_appender(error, msgs[UndefinedException])
     return vals, error
 
 

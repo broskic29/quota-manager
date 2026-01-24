@@ -3,6 +3,7 @@ from sqlite3 import IntegrityError
 import logging
 
 import quota_manager.sql_management as sqlm
+import quota_manager.quota_management as qm
 import quota_manager.sqlite_helper_functions as sqlh
 import quota_manager.flask_utils as flu
 
@@ -245,57 +246,20 @@ new_group_form = """
             </label>
 
             <label>
-                High-Speed Quota:
+                Desired Quota Ratio:
                 <div class="quota-field">
                     <input
                         type="number"
-                        name="high_speed_quota"
+                        name="desired_quota_ratio"
                         min="0"
-                        {% if high_speed_unit == "GB" %}
-                            step="0.001"
-                            placeholder="e.g. 1.250"
-                        {% else %}
-                            step="1"
-                            placeholder="e.g. 1024"
-                        {% endif %}
+                        max="1"
+                        step="0.01"
                         required
                     >
-                    <select name="high_speed_unit">
-                        <option value="MB" {% if high_speed_unit != "GB" %}selected{% endif %}>MB</option>
-                        <option value="GB" {% if high_speed_unit == "GB" %}selected{% endif %}>GB</option>
-                    </select>
                 </div>
                 <small style="display:block; color:#555; font-size:0.9em;">
-                    1024 MB = 1 GB
                 </small>
             </label>
-
-            <label>
-                Throttled Quota:
-                <div class="quota-field">
-                    <input
-                        type="number"
-                        name="throttled_quota"
-                        min="0"
-                        {% if throttled_unit == "GB" %}
-                            step="0.001"
-                            placeholder="e.g. 0.500"
-                        {% else %}
-                            step="1"
-                            placeholder="e.g. 500"
-                        {% endif %}
-                        required
-                    >
-                    <select name="throttled_unit">
-                        <option value="MB" {% if throttled_unit != "GB" %}selected{% endif %}>MB</option>
-                        <option value="GB" {% if throttled_unit == "GB" %}selected{% endif %}>GB</option>
-                    </select>
-                </div>
-                <small style="display:block; color:#555; font-size:0.9em;">
-                    1024 MB = 1 GB
-                </small>
-            </label>
-
 
             <input type="submit" value="Create Group">
 
@@ -524,23 +488,17 @@ def create_user():
             sqlm.UserNameError: f"Failed to create user {username}: User already exists.\n",
             sqlm.GroupNameError: f"Failed inserting user {username} into group {group_name}: No group by name {group_name} exists.\n",
             IntegrityError: f"Failed to create user {username}: User already exists.\n",
+            qm.QuotaAllottmentError: None,
+            qm.RestrictedDayError: None,
             flu.UndefinedException: f"Internal error creating user {username}. Please reload page.\n",
         }
 
         _, error = flu.safe_call(
-            sqlm.insert_user_radius,
+            qm.create_user,
             error,
             USER_CREATION_ERROR_MESSAGES,
             username,
             DEFAULT_PASSWORD,
-            sqlh.RADIUS_DB_PATH,
-        )
-
-        _, error = flu.safe_call(
-            sqlm.create_user_usage,
-            error,
-            USER_CREATION_ERROR_MESSAGES,
-            username,
             group_name,
         )
 
@@ -560,89 +518,56 @@ def create_user():
 @admin_management_app.route("/admin/new_group", methods=["GET", "POST"])
 @flu.require_admin_auth
 def create_group():
-    high_speed_unit = "MB"
-    throttled_unit = "MB"
     error = None
     if request.method == "POST":
         data = request.form
         group_name = data.get("group_name")
-
-        high_speed_unit = request.form.get("high_speed_unit", "MB")
-        throttled_unit = request.form.get("throttled_unit", "MB")
+        desired_quota_ratio = float(request.form.get("desired_quota_ratio"))
 
         error = flu.error_appender(error, flu.validate_name(group_name, "Group name"))
 
-        # Likely need to change this strucutre. Make an admin page where you can
-        # dynamically determine quotas for all groups with a limit. If you input a value,
-        # it will automatically change other values to make sure you are within the limit for high-speed-data.
-        # Then just give a few (dynamically changing) options in a drop-down menu
-        # for the admin to choose from when assigning a quota to a group.
-
-        # Problems: assigning a new group will change the slice of the pie for each user.
-        # Have to make quotas dynamically updating based on number of users on network.
-        # Groups will simply have to be determined by proportionate slice of the pie.
-        # Maybe just a few options like: high data quota, medium data quota, low data quota.
-        # Groups should not be monkeyed with too much. Need to add another admin page that is
-        # basically a tool to select quota values for high, medium, low.
-
-        # There need to be default values selected that are simple. Then also give access to a design
-        # tool to fine tune quotas.
-
-        byte_unit_multipliers = flu.byte_unit_multipliers
-
-        high_speed_quota = float(data.get("high_speed_quota"))
-        throttled_quota = float(data.get("throttled_quota"))
-
-        high_speed_quota_bytes = int(
-            high_speed_quota * byte_unit_multipliers[data.get("high_speed_unit")]
-        )
-        throttled_quota_bytes = int(
-            throttled_quota * byte_unit_multipliers[data.get("throttled_unit")]
-        )
-
-        error = flu.error_appender(
-            error, flu.validate_positive_int(high_speed_quota_bytes, "High-speed Quota")
-        )
-        error = flu.error_appender(
-            error, flu.validate_positive_int(throttled_quota_bytes, "Throttled Quota")
-        )
-        if error:
-            return render_template_string(
-                new_group_form,
-                high_speed_unit=high_speed_unit,
-                throttled_unit=throttled_unit,
-                error=error,
-            )
-
         GROUP_CREATION_ERROR_MESSAGES = {
             IntegrityError: f"Failed to create group {group_name}: Group already exists.\n",
+            ValueError: None,
+            qm.QuotaAllottmentError: None,
             flu.UndefinedException: f"Internal error creating user {group_name}. Please reload page.\n",
         }
 
-        _, error = flu.safe_call(
-            sqlm.create_group_usage,
+        quota_ratio_legal, error = flu.safe_call(
+            qm.check_quota_ratio_legality,
             error,
             GROUP_CREATION_ERROR_MESSAGES,
-            group_name,
-            high_speed_quota_bytes,
-            throttled_quota_bytes,
+            desired_quota_ratio,
         )
 
         if error:
             return render_template_string(
                 new_group_form,
-                high_speed_unit=high_speed_unit,
-                throttled_unit=throttled_unit,
                 error=error,
             )
 
-        log.info(f"Succesfully created group {group_name}.")
-        return render_template_string(success_page, message="Group creation successul!")
+        if quota_ratio_legal:
+            _, error = flu.safe_call(
+                sqlm.create_group_usage,
+                error,
+                GROUP_CREATION_ERROR_MESSAGES,
+                group_name,
+                desired_quota_ratio,
+            )
+
+            if error:
+                return render_template_string(
+                    new_group_form,
+                    error=error,
+                )
+
+            log.info(f"Succesfully created group {group_name}.")
+            return render_template_string(
+                success_page, message="Group creation successul!"
+            )
 
     return render_template_string(
         new_group_form,
-        high_speed_unit=high_speed_unit,
-        throttled_unit=throttled_unit,
         error=error,
     )
 

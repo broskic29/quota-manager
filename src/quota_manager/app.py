@@ -74,7 +74,7 @@ class QuotaManagerApp:
 
     def _start_usage_tracking(self):
         usage_tracking_threads = start_usage_tracking(self.stop_event)
-        self.threads.append(usage_tracking_threads)
+        self.threads.extend(usage_tracking_threads)
         for t in usage_tracking_threads:
             t.start()
         log.info("Usage tracking started.")
@@ -85,7 +85,10 @@ class QuotaManagerApp:
         # Stop ARP threads
         self.stop_event.set()
         for t in self.threads:
-            if t.is_alive():
-                t.join(timeout=5)
+            if isinstance(t, threading.Thread):
+                if t.is_alive():
+                    t.join(timeout=5)
+            else:
+                log.warning(f"Non-thread in self.threads: {type(t)!r} -> {t!r}")
 
         log.info("All threads stopped.")

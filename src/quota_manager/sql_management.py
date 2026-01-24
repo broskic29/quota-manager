@@ -1,5 +1,6 @@
 import sqlite3
 import logging
+import json
 
 from pathlib import Path
 import subprocess
@@ -13,6 +14,7 @@ USAGE_TRACKING_TABLE_NAME = "users"
 GROUP_TABLE_NAME = "groups"
 GROUP_USERS_TABLE_NAME = "group_users"
 RADIUS_TABLE_NAME = "radcheck"
+CONFIGS_TABLE_NAME = "configs"
 
 LOGGED_OUT = 0
 LOGGED_IN = 1
@@ -26,6 +28,12 @@ IP_TIMEOUT = int(3 * IP_POLLING)
 
 class UserNameError(Exception):
     """Raised when a username query returns nothing."""
+
+    pass
+
+
+class ConfigNameError(Exception):
+    """Raised when a config name query returns nothing."""
 
     pass
 
@@ -89,8 +97,8 @@ def init_usage_db():
             log.info(f"sql_management: Creating table '{USAGE_TRACKING_TABLE_NAME}'.")
 
         cur.execute(
-            """
-        CREATE TABLE IF NOT EXISTS users (
+            f"""
+        CREATE TABLE IF NOT EXISTS {USAGE_TRACKING_TABLE_NAME} (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             username TEXT NOT NULL,
             mac_address TEXT,
@@ -102,6 +110,8 @@ def init_usage_db():
             session_start_bytes NOT NULL DEFAULT 0,
             logged_in INTEGER NOT NULL DEFAULT 0,
             exceeds_quota INTEGER NOT NULL DEFAULT 0,
+            has_temporary_quota INTEGER NOT NULL DEFAULT 1,
+            temporary_quota_bytes INTEGER NOT NULL DEFAULT 0,
             UNIQUE(username)
         );
         """
@@ -113,12 +123,17 @@ def init_usage_db():
             log.info(f"sql_management: Creating table '{GROUP_TABLE_NAME}'.")
 
         cur.execute(
-            """
-        CREATE TABLE IF NOT EXISTS groups (
+            f"""
+        CREATE TABLE IF NOT EXISTS {GROUP_TABLE_NAME} (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             group_name TEXT NOT NULL,
             high_speed_quota INTEGER NOT NULL DEFAULT 0,
             throttled_quota INTEGER NOT NULL DEFAULT 0,
+            desired_quota_ratio INTEGER NOT NULL DEFAULT 0.0,
+            min_quota_ratio REAL NOT NULL DEFAULT 0.1,
+            max_num_bytes INTEGER NOT NULL DEFAULT 3072000,
+            min_num_bytes INTEGER NOT NULL DEFAULT 153600,
+            mse_weights REAL,
             UNIQUE(group_name)
         );
         """
@@ -130,8 +145,8 @@ def init_usage_db():
             log.info(f"sql_management: Creating table '{GROUP_USERS_TABLE_NAME}'.")
 
         cur.execute(
-            """
-        CREATE TABLE IF NOT EXISTS group_users (
+            f"""
+        CREATE TABLE IF NOT EXISTS {GROUP_USERS_TABLE_NAME} (
             user_id INTEGER NOT NULL,
             group_id INTEGER NOT NULL,
 
@@ -154,13 +169,33 @@ def init_usage_db():
 
         cur.execute(
             f"""
-        CREATE TABLE IF NOT EXISTS ip_timeouts (
+        CREATE TABLE IF NOT EXISTS {IP_TIMEOUT_TABLE_NAME} (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             ip_addr TEXT NOT NULL,
             mac_addr TEXT NOT NULL,
             last_timestamp INTEGER,
             timeout INTEGER DEFAULT 0,
             UNIQUE(ip_addr)
+        );
+        """
+        )
+
+        if not sqlh.check_if_table_exists(
+            CONFIGS_TABLE_NAME, sqlh.USAGE_TRACKING_DB_PATH
+        ):
+            log.info(f"sql_management: Creating table '{CONFIGS_TABLE_NAME}'.")
+
+        cur.execute(
+            f"""
+        CREATE TABLE IF NOT EXISTS {CONFIGS_TABLE_NAME} (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL,
+            total_monthly_bytes_purchased INTEGER NOT NULL,
+            throttling_enabled INTEGER NOT NULL,
+            active_days TEXT NOT NULL,
+            mac_set_limitation INTEGER NOT NULL,
+            allowed_macs TEXT,
+            active_config INTEGER
         );
         """
         )
@@ -332,8 +367,7 @@ def insert_user_usage(
 
 def create_group_usage(
     group_name,
-    high_speed_quota,
-    throttled_quota,
+    desired_quota_ratio,
     db_path=sqlh.USAGE_TRACKING_DB_PATH,
 ):
     con = sqlite3.connect(
@@ -342,10 +376,10 @@ def create_group_usage(
     cur = con.cursor()
     cur.execute(
         """
-    INSERT INTO groups (group_name, high_speed_quota, throttled_quota)
-    VALUES (?, ?, ?)
+    INSERT INTO groups (group_name, desired_quota_ratio)
+    VALUES (?, ?)
     """,
-        (group_name, high_speed_quota, throttled_quota),
+        (group_name, desired_quota_ratio),
     )
 
     con.commit()
@@ -436,9 +470,35 @@ def get_groups_usage(db_path=sqlh.USAGE_TRACKING_DB_PATH):
     return [entry[0] for entry in res]
 
 
+def update_group_quota(
+    group_name, quota_byte_value, db_path=sqlh.USAGE_TRACKING_DB_PATH
+):
+    con = sqlite3.connect(
+        db_path, timeout=30, isolation_level=None
+    )  # Connects to database
+    cur = con.cursor()
+
+    cur.execute(
+        f"""
+            UPDATE {GROUP_TABLE_NAME}
+            SET high_speed_quota = ?
+            WHERE group_name = ?
+            """,
+        (quota_byte_value, group_name),
+    )
+    log.info(f"Group {group_name} quota successfully updated.")
+    sqlh.log_all_table_information(
+        GROUP_TABLE_NAME, db_path=sqlh.USAGE_TRACKING_DB_PATH
+    )
+
+    con.commit()
+    con.close()
+
+
 def create_user_usage(
     username,
     group_name,
+    temporary_quota_bytes,
     mac_address="00:00:00:00:00",
     ip_address="0.0.0.0",
     db_path=sqlh.USAGE_TRACKING_DB_PATH,
@@ -467,10 +527,10 @@ def create_user_usage(
 
     cur.execute(
         """
-    INSERT INTO users (username, mac_address, ip_address, daily_usage_bytes, monthly_usage_bytes, session_total_bytes, session_start_bytes, logged_in)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    INSERT INTO users (username, mac_address, ip_address, temporary_quota_bytes)
+    VALUES (?, ?, ?, ?)
     """,
-        (f"{username}", f"{mac_address}", f"{ip_address}", 0, 0, 0, 0, LOGGED_OUT),
+        (username, mac_address, ip_address, temporary_quota_bytes),
     )
 
     cur.execute(
@@ -597,6 +657,122 @@ def delete_user_usage(
     con.commit()
     con.close()
     log.info(f"User '{username}' deleted successfully.")
+
+
+def create_config_usage(
+    name: str,
+    total_bytes: int,
+    throttling_enabled: bool,
+    active_days: list[int],
+    mac_set_limitation: bool,
+    allowed_macs: list[str] | None = None,
+    active_config: int | None = None,
+    db_path=sqlh.USAGE_TRACKING_DB_PATH,
+):
+
+    active_days = ",".join(str(day) for day in active_days)
+
+    if allowed_macs:
+        allowed_macs = ",".join(mac for mac in allowed_macs)
+
+    con = sqlite3.connect(
+        db_path, timeout=30, isolation_level=None
+    )  # Connects to database
+    cur = con.cursor()
+
+    cur.execute(
+        f"""
+    INSERT INTO {CONFIGS_TABLE_NAME} (name, total_monthly_bytes_purchased, throttling_enabled, active_days, mac_set_limitation, allowed_macs, active_config)
+    VALUES (?, ?, ?, ?, ?, ?, ?)
+    """,
+        (
+            name,
+            total_bytes,
+            throttling_enabled,
+            active_days,
+            mac_set_limitation,
+            allowed_macs,
+            active_config,
+        ),
+    )
+
+    con.commit()
+    con.close()
+
+
+def select_config_row(name, db_path=sqlh.USAGE_TRACKING_DB_PATH):
+    con = sqlite3.connect(
+        db_path, timeout=30, isolation_level=None
+    )  # Connects to database
+    cur = con.cursor()
+    cur.execute(
+        f"""
+        SELECT *
+        FROM {CONFIGS_TABLE_NAME}
+        WHERE name = ?
+        """,
+        (name,),
+    )
+    row = cur.fetchone()
+    con.close()
+    return row
+
+
+def update_config_usage(
+    name: str | None = None,
+    total_bytes: int | None = None,
+    throttling_enabled: bool | None = None,
+    active_days: list[int] | None = None,
+    mac_set_limitation: bool | None = None,
+    allowed_macs: list[str] | None = None,
+    active_config: int | None = None,
+    db_path=sqlh.USAGE_TRACKING_DB_PATH,
+):
+    row = select_config_row(name)
+
+    # This updates the user if it already exists,
+    # otherwise, creates new user.
+
+    # Carries over daily bytes and whatnot. Need to test...
+    if row:
+        columns = [
+            column for column in sqlh.fetch_all_columns(CONFIGS_TABLE_NAME, db_path)
+        ]
+        set_clause = ", ".join(f"{col} = ?" for col in columns)
+        values = list(row)
+        log.debug(f"Values for config {name}: {values}")
+        values[1] = total_bytes if total_bytes is not None else values[1]
+        values[2] = throttling_enabled if throttling_enabled is not None else values[2]
+        values[3] = active_days if active_days else values[3]
+        values[4] = mac_set_limitation if mac_set_limitation else values[4]
+        values[5] = allowed_macs if allowed_macs else values[5]
+        values[6] = active_config if active_config else values[6]
+
+        con = sqlite3.connect(
+            db_path, timeout=30, isolation_level=None
+        )  # Connects to database
+        cur = con.cursor()
+
+        cur.execute(
+            f"""
+            UPDATE {CONFIGS_TABLE_NAME}
+            SET {set_clause}
+            WHERE name = ?
+            """,
+            values + [name],
+        )
+
+        log.info(f"Config {name} successfully updated.")
+        sqlh.log_all_table_information(
+            USAGE_TRACKING_TABLE_NAME, db_path=sqlh.USAGE_TRACKING_DB_PATH
+        )
+
+        con.commit()
+        con.close()
+    else:
+        raise ConfigNameError(
+            f"Failed attempting to update system config: config {name} does not exist."
+        )
 
 
 def fetch_user_mac_address_usage(username, db_path=sqlh.USAGE_TRACKING_DB_PATH):
@@ -731,6 +907,113 @@ def fetch_all_usernames_usage(db_path=sqlh.USAGE_TRACKING_DB_PATH):
     cur.execute(
         f"""
         SELECT username
+        FROM {USAGE_TRACKING_TABLE_NAME}
+        """,
+    )
+    return [entry[0] for entry in cur.fetchall()]
+
+
+def fetch_group_quota_info_usage(db_path=sqlh.USAGE_TRACKING_DB_PATH):
+    con = sqlite3.connect(db_path, timeout=30, isolation_level=None)
+    cur = con.cursor()
+    cur.execute(
+        f"""
+        SELECT
+            g.group_name,
+            COUNT(gu.user_id) AS num_members,
+            g.desired_quota_ratio, g.min_quota_ratio,
+            g.max_num_bytes,
+            g.min_num_bytes,
+            g.mse_weights
+        FROM {GROUP_TABLE_NAME} g
+        LEFT JOIN group_users gu ON gu.group_id = g.id
+        GROUP BY
+            g.id,
+            g.group_name,
+            g.desired_quota_ratio,
+            g.min_quota_ratio,
+            g.max_num_bytes,
+            g.min_num_bytes,
+            g.mse_weights
+        ORDER BY g.group_name;
+        """,
+    )
+    return cur.fetchall()
+
+
+def fetch_desired_quota_ratios(db_path=sqlh.USAGE_TRACKING_DB_PATH):
+    con = sqlite3.connect(db_path, timeout=30, isolation_level=None)
+    cur = con.cursor()
+    cur.execute(
+        f"""
+        SELECT desired_quota_ratio
+        FROM {GROUP_TABLE_NAME}
+        """,
+    )
+    res = cur.fetchall()
+    res = [val[0] for val in res]
+    return res
+
+
+def fetch_config_total_bytes(
+    config_name="default", db_path=sqlh.USAGE_TRACKING_DB_PATH
+):
+    con = sqlite3.connect(db_path, timeout=30, isolation_level=None)
+    cur = con.cursor()
+    cur.execute(
+        f"""
+        SELECT total_monthly_bytes_purchased
+        FROM {CONFIGS_TABLE_NAME}
+        WHERE name = ?
+        """,
+        (config_name,),
+    )
+    res = cur.fetchone()
+    return res[0]
+
+
+def fetch_max_daily_usage(db_path=sqlh.USAGE_TRACKING_DB_PATH):
+    """
+    Should iterate across each user in the system, summing (user_quota - daily_usage). If user has a temporary quota, sum that instead.
+    """
+    con = sqlite3.connect(db_path, timeout=30, isolation_level=None)
+    cur = con.cursor()
+
+    if sqlh.check_if_table_empty("users", sqlh.USAGE_TRACKING_DB_PATH):
+        return 0
+
+    cur.execute("PRAGMA foreign_keys = ON;")
+
+    cur.execute(
+        """
+        SELECT COALESCE(SUM(
+            CASE
+                WHEN u.has_temporary_quota = 1
+                    THEN COALESCE(u.temporary_quota_bytes, 0) - COALESCE(u.daily_usage_bytes, 0)
+                ELSE
+                    COALESCE(g.high_speed_quota, 0) - COALESCE(u.daily_usage_bytes, 0)
+            END
+        ), 0)
+        FROM users u
+        JOIN group_users gu ON u.id = gu.user_id
+        JOIN groups g ON g.id = gu.group_id
+        """
+    )
+
+    res = cur.fetchone()
+    return res[0]
+
+
+def fetch_all_monthly_usage_bytes(db_path=sqlh.USAGE_TRACKING_DB_PATH):
+
+    if sqlh.check_if_table_empty("users", sqlh.USAGE_TRACKING_DB_PATH):
+        return 0
+
+    con = sqlite3.connect(db_path, timeout=30, isolation_level=None)
+    cur = con.cursor()
+    cur.execute(
+        f"""
+        SELECT monthly_usage_bytes
         FROM {USAGE_TRACKING_TABLE_NAME}
         """,
     )
@@ -908,6 +1191,20 @@ def wipe_session_total_bytes(username, db_path=sqlh.USAGE_TRACKING_DB_PATH):
     con.close()
 
 
+def wipe_temporary_quotas(db_path=sqlh.USAGE_TRACKING_DB_PATH):
+    log.debug(f"Wiping all temporary_quota_bytes...")
+
+    with sqlite3.connect(db_path, timeout=30) as con:
+        con.execute(
+            """
+            UPDATE users
+            SET has_temporary_quota = 0,
+                temporary_quota_bytes = 0
+            WHERE has_temporary_quota = 1 OR temporary_quota_bytes != 0
+            """
+        )
+
+
 def usage_daily_wipe(db_path=sqlh.USAGE_TRACKING_DB_PATH):
     con = sqlite3.connect(
         db_path, timeout=30, isolation_level=None
@@ -977,7 +1274,7 @@ def fetch_daily_bytes_usage(username, db_path=sqlh.USAGE_TRACKING_DB_PATH):
 
 
 def fetch_high_speed_quota_for_user_usage(
-    username, db_path=sqlh.USAGE_TRACKING_DB_PATH
+    username, temporary_quota=False, db_path=sqlh.USAGE_TRACKING_DB_PATH
 ):
     # Raise error if user doesn't exist, isn't in group, or if group doesn't exist
     user_exists = check_if_user_exists(username)
@@ -1007,20 +1304,35 @@ def fetch_high_speed_quota_for_user_usage(
     )  # Connects to database
     cur = con.cursor()
 
-    cur.execute("PRAGMA foreign_keys = ON;")
+    quota_bytes = None
 
-    cur.execute(
-        """
-    SELECT g.high_speed_quota
-    FROM users u
-    JOIN group_users gu ON u.id = gu.user_id
-    JOIN groups g ON g.id = gu.group_id
-    WHERE u.username = ?
-    """,
-        (username,),
-    )
+    if temporary_quota:
+        cur.execute(
+            """
+        SELECT temporary_quota_bytes
+        FROM users
+        WHERE username = ?
+        """,
+            (username,),
+        )
 
-    quota_bytes = cur.fetchone()
+        quota_bytes = cur.fetchone()
+
+    else:
+        cur.execute("PRAGMA foreign_keys = ON;")
+
+        cur.execute(
+            """
+        SELECT g.high_speed_quota
+        FROM users u
+        JOIN group_users gu ON u.id = gu.user_id
+        JOIN groups g ON g.id = gu.group_id
+        WHERE u.username = ?
+        """,
+            (username,),
+        )
+
+        quota_bytes = cur.fetchone()
 
     con.commit()
     con.close()
@@ -1201,6 +1513,28 @@ def check_if_user_logged_in(username, db_path=sqlh.USAGE_TRACKING_DB_PATH):
 
     logged_in = res[0]
     return bool(logged_in)
+
+
+def check_if_has_temporary_quota(username, db_path=sqlh.USAGE_TRACKING_DB_PATH):
+    con = sqlite3.connect(
+        db_path, timeout=30, isolation_level=None
+    )  # Connects to database
+    cur = con.cursor()
+    cur.execute(
+        """
+        SELECT has_temporary_quota
+        FROM users
+        WHERE username = ?
+        """,
+        (username,),
+    )
+    res = cur.fetchone()
+    con.close()
+    if res is None:
+        raise UserNameError(f"User {username} does not exist.")
+
+    has_temp_quota = res[0]
+    return bool(has_temp_quota)
 
 
 def check_if_user_exceeds_quota(username, db_path=sqlh.USAGE_TRACKING_DB_PATH):
