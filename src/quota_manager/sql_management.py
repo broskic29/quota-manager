@@ -122,6 +122,12 @@ def init_usage_db():
         ):
             log.info(f"sql_management: Creating table '{GROUP_TABLE_NAME}'.")
 
+        # For now, min and max number of bytes, as well as min quota ratio are hard coded
+        # to avoid exposing these to admin that is not me. Need to remember this as well as remember to change this
+        # in future.
+        #
+        # Max num bytes currently hard coded at 500 GB.
+        # Min num bytes currently hard coded at 150 MB.
         cur.execute(
             f"""
         CREATE TABLE IF NOT EXISTS {GROUP_TABLE_NAME} (
@@ -131,8 +137,8 @@ def init_usage_db():
             throttled_quota INTEGER NOT NULL DEFAULT 0,
             desired_quota_ratio INTEGER NOT NULL DEFAULT 0.0,
             min_quota_ratio REAL NOT NULL DEFAULT 0.1,
-            max_num_bytes INTEGER NOT NULL DEFAULT 3072000,
-            min_num_bytes INTEGER NOT NULL DEFAULT 153600,
+            max_num_bytes INTEGER,
+            min_num_bytes INTEGER NOT NULL DEFAULT 157286400,
             mse_weights REAL,
             UNIQUE(group_name)
         );
@@ -653,6 +659,7 @@ def delete_user_usage(
     )  # Connects to database
     cur = con.cursor()
     # Delete from authentication table
+    con.execute("PRAGMA foreign_keys = ON;")
     cur.execute("DELETE FROM users WHERE username = ?", (username,))
     con.commit()
     con.close()

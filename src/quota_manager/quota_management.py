@@ -155,28 +155,26 @@ def calculate_hypothetical_user_quota_for_tomorrow(group_name, now):
 
     total_daily_bytes = min_bytes_avail_tomorrow / total_weekdays_left_after_today
 
-    total_daily_mbytes = total_daily_bytes / 1024**2
-
-    log.debug(f"Total mbytes available for today: {total_daily_mbytes}.")
+    log.debug(f"Total bytes available for today: {total_daily_bytes}.")
 
     group_config_dict = gen_group_config_dict_for_sqt(
-        total_daily_mbytes, user_group_name=group_name
+        total_daily_bytes, user_group_name=group_name
     )
 
-    group_config_dict[group_name]["n"] += 1
-
-    quota_config_dict = sqt.gen_quota_config_dict(total_daily_mbytes, group_config_dict)
+    quota_config_dict = sqt.gen_quota_config_dict(total_daily_bytes, group_config_dict)
     log.debug(f"Quota config dict: {quota_config_dict}")
 
-    group_quotas_dict = sqt.quota_vector_generator(quota_config_dict)["v_dict"]
+    group_quotas_dict = sqt.quota_vector_generator(quota_config_dict)
     log.debug(f"Quota optimization result: {group_quotas_dict}.")
+
+    group_quotas_dict = group_quotas_dict["v_dict"]
 
     if group_quotas_dict is None:
         raise QuotaAllottmentError(
             "Impossible to calculate quota for user with current constraints. Please change desired quota ratio for group."
         )
 
-    return group_quotas_dict[group_name]
+    return int(group_quotas_dict[group_name])
 
 
 def update_user_bytes(username, usage_dict={}, db_path=sqlh.USAGE_TRACKING_DB_PATH):
@@ -187,7 +185,8 @@ def update_user_bytes(username, usage_dict={}, db_path=sqlh.USAGE_TRACKING_DB_PA
             sqlm.update_user_bytes_usage(byte_delta, username, db_path)
             usage_dict[username] = user_bytes
     else:
-        log.debug(f"User {username} not logged in. Ignoring for usage check.")
+        # log.debug(f"User {username} not logged in. Ignoring for usage check.")
+        pass
 
     return usage_dict
 
@@ -512,16 +511,14 @@ def update_group_quotas(now, reset_day):
 
     total_daily_bytes = total_bytes_available / total_weekdays_left
 
-    total_daily_mbytes = total_daily_bytes / 1024**2
+    log.debug(f"Total bytes available for today: {total_daily_bytes}.")
 
-    log.debug(f"Total mbytes available for today: {total_daily_mbytes}.")
-
-    group_config_dict = gen_group_config_dict_for_sqt(total_daily_mbytes)
+    group_config_dict = gen_group_config_dict_for_sqt(total_daily_bytes)
 
     if group_config_dict is None:
         log.debug("update_group_quotas: No users in the system.")
 
-    quota_config_dict = sqt.gen_quota_config_dict(total_daily_mbytes, group_config_dict)
+    quota_config_dict = sqt.gen_quota_config_dict(total_daily_bytes, group_config_dict)
     log.debug(f"Quota config dict: {quota_config_dict}")
 
     group_quotas_dict = sqt.quota_vector_generator(quota_config_dict)["v_dict"]
@@ -574,6 +571,26 @@ def compute_remaining_weekdays(now, reset_day):
     return count
 
 
+from math import fsum
+
+
+def calculate_max_num_bytes(group_config_dict, total_daily_bytes: float, *, tol=1e-3):
+    active = {name: g for name, g in group_config_dict.items() if g.get("n", 0) > 0}
+    if not active:
+        raise ValueError("No active groups (all n=0).")
+
+    denom = fsum(g["n"] * g["desired_quota_ratio"] for g in active.values())
+    if denom <= tol:
+        raise ValueError("Sum(n_i * desired_quota_ratio_i) must be > 0.")
+
+    k = total_daily_bytes / denom
+
+    for name, g in active.items():
+        g["max_num_bytes"] = k * g["desired_quota_ratio"]
+
+    return group_config_dict
+
+
 def gen_group_config_dict_for_sqt(
     total_daily_bytes_available, user_group_name=None, tol=1e-6
 ):
@@ -586,7 +603,7 @@ def gen_group_config_dict_for_sqt(
         num_members,
         desired_quota_ratio,
         min_quota_ratio,
-        max_num_bytes,
+        _,
         min_num_bytes,
         mse_weights,
     ) in group_info:
@@ -594,14 +611,28 @@ def gen_group_config_dict_for_sqt(
             "n": num_members,
             "desired_quota_ratio": desired_quota_ratio,
             "min_quota_ratio": min_quota_ratio,
-            "max_num_mbytes": max_num_bytes,
-            "min_num_mbytes": min_num_bytes,
+            "max_num_bytes": None,
+            "min_num_bytes": min_num_bytes,
             "mse_weights": mse_weights,
         }
 
+    # Increment number of users in the group if user_group_name is given!
+    # Should make this behavior more exlicit. Passing user_group_name is changing function...
+    if user_group_name:
+        group_config_dict[user_group_name]["n"] += 1
+
+    # Also some hidden behavior here. If n<= 0, max not incremented.
+    group_config_dict = calculate_max_num_bytes(
+        group_config_dict, total_daily_bytes_available
+    )
+
+    log.debug(
+        f"gen_group_config_dict_for_sqt: group_config_dict after max calcuation: {group_config_dict}"
+    )
+
     # cases
-    # 1. No groups with any members
-    # 2. 1 group with members
+    # 1. No groups with any members - working!
+    # 2. 1 group with members - not working...
     # 3. > 1 group with members
     # 4. all groups with members
     truncated_group_config_dict = {
@@ -614,15 +645,21 @@ def gen_group_config_dict_for_sqt(
         f"gen_group_config_dict_for_sqt: truncated_group_config_dict: {truncated_group_config_dict}"
     )
 
+    # Setting n=0 here because n is incremented in the calling function
+    # `calculate_hypothetical_user_quota_for_tomorrow`.
+    # Probably not the best solution, but should work fine, since this
+    # group_config_dict creation only happens if there is a user_group_name
+    # passed to the function, which only happens in
+    # calculate_hypothetical_user_quota_for_tomorrow`
     if not truncated_group_config_dict:
         if user_group_name:
             group_config_dict = {
                 user_group_name: {
-                    "n": 1,
+                    "n": 0,
                     "desired_quota_ratio": 1.0,
                     "min_quota_ratio": 0.0,
-                    "max_num_mbytes": total_daily_bytes_available,
-                    "min_num_mbytes": 0.0,
+                    "max_num_bytes": total_daily_bytes_available,
+                    "min_num_bytes": 0.0,
                     "mse_weights": None,
                 }
             }
@@ -639,6 +676,7 @@ def gen_group_config_dict_for_sqt(
     ]
 
     log.debug(f"gen_group_config_dict_for_sqt: ratios: {ratios}")
+    log.debug(f"gen_group_config_dict_for_sqt: group_config_dict: {group_config_dict}")
 
     total_ratio = fsum(ratios)
     leftover_ratio = 1.0 - total_ratio
@@ -651,10 +689,8 @@ def gen_group_config_dict_for_sqt(
             truncated_group_config_dict.items()
         ):
             group_dict["desired_quota_ratio"] = ratios[idx]
-            if len(truncated_group_config_dict) != len(group_config_dict):
-                group_dict["max_num_mbytes"] = total_daily_bytes_available
 
-    for group_name, group_dict in group_config_dict:
+    for group_name, group_dict in group_config_dict.items():
         if group_name in truncated_group_config_dict:
             group_config_dict[group_name] = truncated_group_config_dict[group_name]
         else:
@@ -662,8 +698,8 @@ def gen_group_config_dict_for_sqt(
                 "n": 0,
                 "desired_quota_ratio": 0,
                 "min_quota_ratio": 0,
-                "max_num_mbytes": 0,
-                "min_num_mbytes": 0,
+                "max_num_bytes": 0,
+                "min_num_bytes": 0,
                 "mse_weights": None,
             }
 
