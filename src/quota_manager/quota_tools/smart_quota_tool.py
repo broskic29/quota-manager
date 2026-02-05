@@ -206,11 +206,17 @@ def quota_vector_generator(
             leftover_mb = (abs(remaining_budget) / total_daily_bytes) * 1024**2
 
             if mse < best["mse"]:
+
+                v_dict = {name: v for name, v in zip(groups, v.copy())}
+                r_dict = {name: r for name, r in zip(groups, r.copy())}
+
                 best = {
                     "mse": mse,
-                    "leftover_mb": leftover_mb,
-                    "v_dict": {name: v for name, v in zip(groups, v.copy())},
-                    "r_dict": {name: r for name, r in zip(groups, r.copy())},
+                    "leftover_mb": total_daily_bytes
+                    - sum([v for v in v_dict.values()]),
+                    "sum_of_ratios": sum([r for r in r_dict.values()]),
+                    "v_dict": v_dict,
+                    "r_dict": r_dict,
                 }
             return
 
