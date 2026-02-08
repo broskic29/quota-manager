@@ -5,7 +5,7 @@ import logging
 import quota_manager.sql_management as sqlm
 import quota_manager.quota_management as qm
 import quota_manager.sqlite_helper_functions as sqlh
-import quota_manager.flask_utils as flu
+import quota_manager.flask_tools.flask_utils as flu
 
 admin_management_app = Flask(__name__)
 

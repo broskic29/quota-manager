@@ -15,7 +15,7 @@ import quota_manager.sql_management as sqlm
 import quota_manager.sqlite_helper_functions as sqlh
 import quota_manager.nftables_management as nftm
 import quota_manager.quota_management as qm
-import quota_manager.flask_utils as flu
+import quota_manager.flask_tools.flask_utils as flu
 
 user_app = Flask(__name__)
 user_app.secret_key = "donbosco1815"

@@ -110,8 +110,6 @@ def init_usage_db():
             session_start_bytes NOT NULL DEFAULT 0,
             logged_in INTEGER NOT NULL DEFAULT 0,
             exceeds_quota INTEGER NOT NULL DEFAULT 0,
-            has_temporary_quota INTEGER NOT NULL DEFAULT 1,
-            temporary_quota_bytes INTEGER NOT NULL DEFAULT 0,
             UNIQUE(username)
         );
         """
@@ -138,7 +136,7 @@ def init_usage_db():
             desired_quota_ratio INTEGER NOT NULL DEFAULT 0.0,
             min_quota_ratio REAL NOT NULL DEFAULT 0.1,
             max_num_bytes INTEGER,
-            min_num_bytes INTEGER NOT NULL DEFAULT 157286400,
+            min_num_bytes INTEGER NOT NULL DEFAULT 0.0,
             mse_weights REAL,
             UNIQUE(group_name)
         );
@@ -504,7 +502,7 @@ def update_group_quota(
 def create_user_usage(
     username,
     group_name,
-    temporary_quota_bytes,
+    temporary_quota_bytes=None,
     mac_address="00:00:00:00:00",
     ip_address="0.0.0.0",
     db_path=sqlh.USAGE_TRACKING_DB_PATH,
@@ -524,6 +522,9 @@ def create_user_usage(
             f"Failed to insert user {username} into group {group_name}: group not found in groups table."
         )
         raise GroupNameError(f"Group {group_name} does not exist.")
+
+    if temporary_quota_bytes is None:
+        temporary_quota_bytes = 0
 
     con = sqlite3.connect(
         db_path, timeout=30, isolation_level=None
@@ -1281,7 +1282,7 @@ def fetch_daily_bytes_usage(username, db_path=sqlh.USAGE_TRACKING_DB_PATH):
 
 
 def fetch_high_speed_quota_for_user_usage(
-    username, temporary_quota=False, db_path=sqlh.USAGE_TRACKING_DB_PATH
+    username, db_path=sqlh.USAGE_TRACKING_DB_PATH
 ):
     # Raise error if user doesn't exist, isn't in group, or if group doesn't exist
     user_exists = check_if_user_exists(username)
@@ -1311,35 +1312,20 @@ def fetch_high_speed_quota_for_user_usage(
     )  # Connects to database
     cur = con.cursor()
 
-    quota_bytes = None
+    cur.execute("PRAGMA foreign_keys = ON;")
 
-    if temporary_quota:
-        cur.execute(
-            """
-        SELECT temporary_quota_bytes
-        FROM users
-        WHERE username = ?
-        """,
-            (username,),
-        )
+    cur.execute(
+        """
+    SELECT g.high_speed_quota
+    FROM users u
+    JOIN group_users gu ON u.id = gu.user_id
+    JOIN groups g ON g.id = gu.group_id
+    WHERE u.username = ?
+    """,
+        (username,),
+    )
 
-        quota_bytes = cur.fetchone()
-
-    else:
-        cur.execute("PRAGMA foreign_keys = ON;")
-
-        cur.execute(
-            """
-        SELECT g.high_speed_quota
-        FROM users u
-        JOIN group_users gu ON u.id = gu.user_id
-        JOIN groups g ON g.id = gu.group_id
-        WHERE u.username = ?
-        """,
-            (username,),
-        )
-
-        quota_bytes = cur.fetchone()
+    quota_bytes = cur.fetchone()
 
     con.commit()
     con.close()
@@ -1431,11 +1417,11 @@ def check_which_group_user_is_in(username, db_path=sqlh.USAGE_TRACKING_DB_PATH):
         """,
         (username,),
     )
-    res = cur.fetchall()
+    res = cur.fetchone()
     con.close()
     if len(res) < 1:
         return None
-    return res
+    return res[0]
 
 
 def check_if_user_exists(
@@ -1454,6 +1440,7 @@ def check_if_user_exists(
         (username,),
     )
     res = cur.fetchall()
+    log.debug(f"check_if_user_exists: {res}")
     con.close()
     if len(res) < 1:
         return False
@@ -1520,28 +1507,6 @@ def check_if_user_logged_in(username, db_path=sqlh.USAGE_TRACKING_DB_PATH):
 
     logged_in = res[0]
     return bool(logged_in)
-
-
-def check_if_has_temporary_quota(username, db_path=sqlh.USAGE_TRACKING_DB_PATH):
-    con = sqlite3.connect(
-        db_path, timeout=30, isolation_level=None
-    )  # Connects to database
-    cur = con.cursor()
-    cur.execute(
-        """
-        SELECT has_temporary_quota
-        FROM users
-        WHERE username = ?
-        """,
-        (username,),
-    )
-    res = cur.fetchone()
-    con.close()
-    if res is None:
-        raise UserNameError(f"User {username} does not exist.")
-
-    has_temp_quota = res[0]
-    return bool(has_temp_quota)
 
 
 def check_if_user_exceeds_quota(username, db_path=sqlh.USAGE_TRACKING_DB_PATH):

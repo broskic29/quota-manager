@@ -11,7 +11,7 @@ from quota_manager import sql_management as sqlm
 from quota_manager import nftables_management as nftm
 from quota_manager import sqlite_helper_functions as sqlh
 
-from quota_tools import smart_quota_tool as sqt
+from quota_manager.quota_tools import smart_quota_tool as sqt
 
 log = logging.getLogger(__name__)
 
@@ -139,21 +139,26 @@ def calculate_byte_delta(user_bytes, username, db_path=sqlh.USAGE_TRACKING_DB_PA
     return byte_delta
 
 
-def calculate_hypothetical_user_quota_for_tomorrow(group_name, now):
+def calculate_hypothetical_group_quotas_for_today(
+    group_name, reset_day=ACCOUNT_BILLING_DAY
+):
 
     total_monthly_bytes_purchased = sqlm.fetch_config_total_bytes()
     total_bytes_used = calculate_total_usage_bytes()
-    max_remaining_daily_usage = sqlm.fetch_max_daily_usage()
+    total_bytes_available = total_monthly_bytes_purchased - total_bytes_used
 
-    min_bytes_avail_tomorrow = total_monthly_bytes_purchased - (
-        total_bytes_used + max_remaining_daily_usage
-    )
+    tz = dt.timezone(dt.timedelta(hours=sqlh.UTC_OFFSET))
+    now = dt.datetime.now(tz)
 
-    total_weekdays_left_after_today = compute_remaining_weekdays(
-        now + dt.timedelta(days=1), ACCOUNT_BILLING_DAY
-    )
+    total_weekdays_left = compute_remaining_weekdays(now, reset_day)
 
-    total_daily_bytes = min_bytes_avail_tomorrow / total_weekdays_left_after_today
+    log.debug(f"Total weekdays remaining in month: {total_weekdays_left}.")
+
+    total_usage_today = calculate_total_daily_usage()
+
+    total_daily_bytes = (
+        total_bytes_available / total_weekdays_left
+    ) - total_usage_today
 
     log.debug(f"Total bytes available for today: {total_daily_bytes}.")
 
@@ -174,7 +179,18 @@ def calculate_hypothetical_user_quota_for_tomorrow(group_name, now):
             "Impossible to calculate quota for user with current constraints. Please change desired quota ratio for group."
         )
 
-    return int(group_quotas_dict[group_name])
+    return group_quotas_dict
+
+
+def calculate_total_daily_usage():
+
+    usernames = sqlm.fetch_all_usernames_usage()
+
+    total_daily_usage = 0
+    for username in usernames:
+        total_daily_usage += sqlm.fetch_daily_bytes_usage(username)
+
+    return total_daily_usage
 
 
 def update_user_bytes(username, usage_dict={}, db_path=sqlh.USAGE_TRACKING_DB_PATH):
@@ -373,11 +389,7 @@ def remove_user_from_ip_timeouts(username=None, ip_addr=None):
 
 def get_quota_and_daily_usage(username, db_path=sqlh.USAGE_TRACKING_DB_PATH):
 
-    has_temp_quota = sqlm.check_if_user_has_temp_quota()
-
-    quota_bytes = sqlm.fetch_high_speed_quota_for_user_usage(
-        username, has_temp_quota, db_path
-    )
+    quota_bytes = sqlm.fetch_high_speed_quota_for_user_usage(username, db_path)
     daily_usage_bytes = sqlm.fetch_daily_bytes_usage(username, db_path)
 
     return daily_usage_bytes, quota_bytes
@@ -538,13 +550,13 @@ def update_group_quotas(now, reset_day):
             "Impossible to calculate quota for user with current constraints. Please change desired quota ratio for group."
         )
 
-    apply_new_quotas(group_quotas_dict)
-    log.debug(f"New user quotas applied:")
-    sqlh.log_all_table_information("groups")
-
     sqlm.wipe_temporary_quotas()
     log.debug(f"Temporary quotas wiped:")
     sqlh.log_all_table_information("users")
+
+    apply_new_quotas(group_quotas_dict)
+    log.debug(f"New user quotas applied:")
+    sqlh.log_all_table_information("groups")
 
 
 def calculate_total_usage_bytes():
@@ -559,19 +571,19 @@ def calculate_total_usage_bytes():
 def compute_remaining_weekdays(now, reset_day):
     """Count weekdays (Mon–Fri) remaining *after* the given day in the same month."""
 
-    next_monthly = now + dt.timedelta(days=(32 - now.day))
-    next_monthly = next_monthly.replace(day=reset_day)
+    if now.day < reset_day:
+        next_monthly = next_monthly.replace(day=reset_day)
+    else:
+        next_monthly = now + dt.timedelta(days=(32 - now.day))
+        next_monthly = next_monthly.replace(day=reset_day)
 
-    cur = now + dt.timedelta(days=1)  # start tomorrow
-    count = 0
-    while cur <= next_monthly:
+    cur = now  # start today
+    count = 1
+    while cur < next_monthly:
         if cur.weekday() < 5:  # 0=Mon ... 4=Fri
             count += 1
         cur += dt.timedelta(days=1)
     return count
-
-
-from math import fsum
 
 
 def calculate_max_num_bytes(group_config_dict, total_daily_bytes: float, *, tol=1e-3):
@@ -708,7 +720,7 @@ def gen_group_config_dict_for_sqt(
 
 def apply_new_quotas(group_quotas_dict):
     for group_name, quota_byte_value in group_quotas_dict.items():
-        sqlm.update_group_quota(group_name, quota_byte_value)
+        sqlm.update_group_quota(group_name, int(quota_byte_value))
 
 
 def add_user_to_set(username, set_name, user_ip=None):
@@ -778,32 +790,35 @@ def unauthorize_user(username):
 
 def create_user(username, radius_password, group_name):
 
-    user_exists = sqlm.check_if_user_exists(
-        username, table_name=sqlm.RADIUS_TABLE_NAME, db_path=sqlh.RADIUS_DB_PATH
-    )
+    user_exists = sqlm.check_if_user_exists(username)
 
     if user_exists:
         raise sqlm.UserNameError(
             f"Failed to create user {username}: User already exists."
         )
 
-    # Check if last day of wipe
     tz = dt.timezone(dt.timedelta(hours=sqlh.UTC_OFFSET))
     now = dt.datetime.now(tz)
 
-    if now.day == ACCOUNT_BILLING_DAY - 1:
-        raise RestrictedDayError(
-            "User creation not allowed on final day of billing cycle."
-        )
+    # ---- Just prohibiting the super specific edge case where a user is created
+    # at the same instant where daily usage is supposed to wipe
+    if now.hour < 1 and now.min < 1:
+        raise RuntimeError("User creation now allowed before 00:01.")
 
-    hypothetical_quota = calculate_hypothetical_user_quota_for_tomorrow(group_name, now)
-    log.debug(f"Hypothetical quota available for user: {hypothetical_quota}")
+    group_quotas = calculate_hypothetical_group_quotas_for_today(
+        group_name, ACCOUNT_BILLING_DAY
+    )
+    log.debug(f"Hypothetical quota available for groups: {group_quotas}")
+
+    apply_new_quotas(group_quotas)
+    log.debug(f"Updated quotas for all groups:")
+    sqlh.log_all_table_information("groups")
 
     sqlm.insert_user_radius(username, radius_password)
     log.debug(f"Inserted user {username} into radius db.")
 
     # Change to set up temporary quota, then disable whenever quota update is called.
-    sqlm.create_user_usage(username, group_name, hypothetical_quota)
+    sqlm.create_user_usage(username, group_name)
     log.debug(f"Inserted user {username} into usage db.")
 
 
@@ -920,6 +935,13 @@ def delete_user_from_system(username):
     remove_user_from_nftables(username)
 
     log.info(f"Successfully deleted user {username} from system.")
+
+
+def delete_all_users_from_system():
+    usernames = sqlm.fetch_all_usernames_usage()
+
+    for username in usernames:
+        delete_user_from_system(username)
 
 
 def check_which_user_logged_in_for_mac_address(mac_address):

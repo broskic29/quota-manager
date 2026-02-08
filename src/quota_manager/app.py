@@ -6,8 +6,8 @@ from time import sleep
 
 from quota_manager.usage_tracker import start_usage_tracking
 from quota_manager.sql_management import init_freeradius_db, init_usage_db
-from quota_manager.user_login_flask_server import user_app
-from quota_manager.admin_management_flask_server import admin_management_app
+from quota_manager.flask_tools.user_login_flask_server import user_app
+from quota_manager.flask_tools.admin_management_flask_server import admin_management_app
 from quota_manager.ip_neigh_timeout_listener import (
     ip_neigh_poll_and_update,
     ip_neigh_enforcer,

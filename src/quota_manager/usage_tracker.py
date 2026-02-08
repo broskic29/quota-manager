@@ -63,9 +63,6 @@ def event_scheduler(stop_event: threading.Event):
 
 def daily_events(now):
 
-    qm.update_group_quotas(now, qm.ACCOUNT_BILLING_DAY)
-    log.info("Updated daily quotas for all groups.")
-
     sqlm.usage_daily_wipe()
     log.info("Daily wipe complete.")
 
@@ -77,6 +74,9 @@ def daily_events(now):
 
     qm.reset_throttling_and_packet_dropping_all_users()
     log.info("Throttling and packet dropping reset.")
+
+    qm.update_group_quotas(now, qm.ACCOUNT_BILLING_DAY)
+    log.info("Updated daily quotas for all groups.")
 
 
 def monthly_events(now):
