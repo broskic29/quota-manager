@@ -133,7 +133,7 @@ def init_usage_db():
             group_name TEXT NOT NULL,
             high_speed_quota INTEGER NOT NULL DEFAULT 0,
             throttled_quota INTEGER NOT NULL DEFAULT 0,
-            desired_quota_ratio INTEGER NOT NULL DEFAULT 0.0,
+            desired_quota_ratio REAL NOT NULL DEFAULT 0.0,
             min_quota_ratio REAL NOT NULL DEFAULT 0.1,
             max_num_bytes INTEGER,
             min_num_bytes INTEGER NOT NULL DEFAULT 0.0,
@@ -554,6 +554,54 @@ def create_user_usage(
     con.close()
 
 
+def delete_group_usage(group_name, db_path=sqlh.USAGE_TRACKING_DB_PATH):
+    con = sqlite3.connect(db_path, timeout=30, isolation_level=None)
+    cur = con.cursor()
+    cur.execute("PRAGMA foreign_keys = ON;")
+    cur.execute("DELETE FROM groups WHERE group_name = ?", (group_name,))
+    con.commit()
+    con.close()
+    log.info(f"Group '{group_name}' deleted successfully.")
+
+
+def update_group_desired_quota_ratio(
+    group_name, desired_quota_ratio, db_path=sqlh.USAGE_TRACKING_DB_PATH
+):
+    con = sqlite3.connect(db_path, timeout=30, isolation_level=None)
+    cur = con.cursor()
+    cur.execute(
+        f"""
+        UPDATE {GROUP_TABLE_NAME}
+        SET desired_quota_ratio = ?
+        WHERE group_name = ?
+        """,
+        (desired_quota_ratio, group_name),
+    )
+    con.commit()
+    con.close()
+    log.info(
+        f"Group '{group_name}' desired_quota_ratio updated to {desired_quota_ratio}."
+    )
+
+
+def count_users_in_group(group_name, db_path=sqlh.USAGE_TRACKING_DB_PATH) -> int:
+    con = sqlite3.connect(db_path, timeout=30, isolation_level=None)
+    cur = con.cursor()
+    cur.execute(
+        """
+        SELECT COUNT(*)
+        FROM users u
+        JOIN group_users gu ON gu.user_id = u.id
+        JOIN groups g ON g.id = gu.group_id
+        WHERE g.group_name = ?
+        """,
+        (group_name,),
+    )
+    res = cur.fetchone()
+    con.close()
+    return int(res[0] if res else 0)
+
+
 def select_user_row(username, db_path=sqlh.USAGE_TRACKING_DB_PATH):
     con = sqlite3.connect(
         db_path, timeout=30, isolation_level=None
@@ -783,6 +831,67 @@ def update_config_usage(
         )
 
 
+def fetch_active_config_row(db_path=sqlh.USAGE_TRACKING_DB_PATH):
+    con = sqlite3.connect(db_path, timeout=30, isolation_level=None)
+    cur = con.cursor()
+    cur.execute(
+        f"""
+        SELECT id, name, total_monthly_bytes_purchased, throttling_enabled, active_days,
+               mac_set_limitation, allowed_macs, active_config
+        FROM {CONFIGS_TABLE_NAME}
+        WHERE active_config = 1
+        LIMIT 1
+        """
+    )
+    row = cur.fetchone()
+    con.close()
+    return row
+
+
+def fetch_active_config(db_path=sqlh.USAGE_TRACKING_DB_PATH) -> dict:
+    row = fetch_active_config_row(db_path)
+    if not row:
+        # fallback to name="default" if present
+        default = select_config_row("default", db_path=db_path)
+        if not default:
+            raise ConfigNameError("No active config and no default config found.")
+        row = default
+
+    # row layout depends on select_config_row vs fetch_active_config_row:
+    # select_config_row returns "*", so safest is to re-query by name using columns:
+    # We'll standardize: if row came from select_config_row, its indexes match table definition.
+    # Table is: id, name, total_monthly_bytes_purchased, throttling_enabled, active_days,
+    #           mac_set_limitation, allowed_macs, active_config
+    cfg = {
+        "id": row[0],
+        "name": row[1],
+        "total_monthly_bytes_purchased": int(row[2]),
+        "throttling_enabled": bool(row[3]),
+        "active_days": row[4] or "",
+        "mac_set_limitation": bool(row[5]),
+        "allowed_macs": row[6] or "",
+        "active_config": row[7],
+    }
+
+    # parse active_days -> list[int]
+    days = []
+    for part in cfg["active_days"].split(",") if cfg["active_days"] else []:
+        part = part.strip()
+        if part != "":
+            days.append(int(part))
+    cfg["active_days_list"] = days
+
+    # parse allowed_macs -> list[str]
+    macs = []
+    for m in cfg["allowed_macs"].split(",") if cfg["allowed_macs"] else []:
+        m = m.strip()
+        if m:
+            macs.append(m)
+    cfg["allowed_macs_list"] = macs
+
+    return cfg
+
+
 def fetch_user_mac_address_usage(username, db_path=sqlh.USAGE_TRACKING_DB_PATH):
 
     # Raise error if user doesn't exist
@@ -954,12 +1063,11 @@ def fetch_desired_quota_ratios(db_path=sqlh.USAGE_TRACKING_DB_PATH):
     cur = con.cursor()
     cur.execute(
         f"""
-        SELECT desired_quota_ratio
+        SELECT group_name, desired_quota_ratio
         FROM {GROUP_TABLE_NAME}
         """,
     )
     res = cur.fetchall()
-    res = [val[0] for val in res]
     return res
 
 

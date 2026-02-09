@@ -512,7 +512,7 @@ def gen_quota_config_dict(
 
 def main():
 
-    quota_config_dict = {
+    example_quota_config_dict = {
         "daily_bytes": (500 / 20) * 1024**3,
         "step_size_in_bytes": 10 * 1024**2,
         "error_tol": 5 * 1024**2,
@@ -552,71 +552,10 @@ def main():
         },
     }
 
-    # quota_config_dict = {
-    #     "daily_bytes": 89478485333,
-    #     "step_size_in_bytes": 0.1 * 1024**2,
-    #     "error_tol": 0.05 * 1024**2,
-    #     "groups": {
-    #         "admin": {
-    #             "n": 1,
-    #             "desired_quota_ratio": 1.0,
-    #             "min_quota_ratio": 0.0,
-    #             "max_num_bytes": 89478485333,
-    #             "min_num_bytes": 0.0,
-    #             "mse_weights": None,
-    #         }
-    #     },
-    # }
-
-    quota_config_dict = {
-        "daily_bytes": 84508934144.0,
-        "step_size_in_bytes": 10485760,
-        "error_tol": 5242880,
-        "groups": {
-            "admin": {
-                "n": 1,
-                "desired_quota_ratio": 0.4444444444444445,
-                "min_quota_ratio": 0.1,
-                "max_num_bytes": 56339289429.33333,
-                "min_num_bytes": 153600,
-                "mse_weights": None,
-            },
-            "computer_students": {
-                "n": 1,
-                "desired_quota_ratio": 0.22222222222222224,
-                "min_quota_ratio": 0.1,
-                "max_num_bytes": 28169644714.666664,
-                "min_num_bytes": 153600,
-                "mse_weights": None,
-            },
-            "default": {
-                "n": 0,
-                "desired_quota_ratio": 0,
-                "min_quota_ratio": 0,
-                "max_num_bytes": 0,
-                "min_num_bytes": 0,
-                "mse_weights": None,
-            },
-            "staff": {
-                "n": 1,
-                "desired_quota_ratio": 0.33333333333333326,
-                "min_quota_ratio": 0.1,
-                "max_num_bytes": None,
-                "min_num_bytes": 153600,
-                "mse_weights": None,
-            },
-        },
-    }
-
-    result = quota_vector_generator(quota_config_dict=quota_config_dict)
+    result = quota_vector_generator(quota_config_dict=example_quota_config_dict)
 
     print(result)
-
-    # Soln!
-    # {'mse': np.float64(9.789960840156634e-05), 'v': array([200., 440., 630., 850.]), 'r': array([0.09433962, 0.20754717, 0.29716981, 0.4009434 ])}
 
 
 if __name__ == "__main__":
     main()
-
-# reduce total num bytes by whatever the max error caused by tolerance would be.

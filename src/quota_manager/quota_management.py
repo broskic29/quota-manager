@@ -550,10 +550,6 @@ def update_group_quotas(now, reset_day):
             "Impossible to calculate quota for user with current constraints. Please change desired quota ratio for group."
         )
 
-    sqlm.wipe_temporary_quotas()
-    log.debug(f"Temporary quotas wiped:")
-    sqlh.log_all_table_information("users")
-
     apply_new_quotas(group_quotas_dict)
     log.debug(f"New user quotas applied:")
     sqlh.log_all_table_information("groups")
@@ -980,11 +976,18 @@ def check_which_users_logged_in_for_ip_address(ip_addr):
     return logged_in_users, logged_out_users
 
 
-def check_quota_ratio_legality(desired_quota_ratio, tol=1e-6):
+def check_quota_ratio_legality(desired_quota_ratio, group_name=None, tol=1e-3):
+
     quota_ratios = sqlm.fetch_desired_quota_ratios()
-    total_ratio = fsum(quota_ratios)
-    leftover_ratio = 1 - total_ratio
-    if desired_quota_ratio > leftover_ratio + tol:
+
+    quota_ratios_with_desired_ratio = [
+        val[1] if val[0] != group_name else desired_quota_ratio for val in quota_ratios
+    ]
+
+    total_ratio = fsum(quota_ratios_with_desired_ratio)
+    leftover_ratio = total_ratio - desired_quota_ratio
+
+    if total_ratio > 1 + tol:
         raise ValueError(
             f"Desired quota ratio too high, causes quota ratio overflow. Please pick a ratio less than or equal to {leftover_ratio}, or change desired ratios for existing groups."
         )
