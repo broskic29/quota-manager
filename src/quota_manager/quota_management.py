@@ -140,7 +140,7 @@ def calculate_byte_delta(user_bytes, username, db_path=sqlh.USAGE_TRACKING_DB_PA
 
 
 def calculate_hypothetical_group_quotas_for_today(
-    group_name, reset_day=ACCOUNT_BILLING_DAY
+    group_name, reset_day=ACCOUNT_BILLING_DAY, old_group_name=None
 ):
 
     total_monthly_bytes_purchased = sqlm.fetch_config_total_bytes()
@@ -163,7 +163,9 @@ def calculate_hypothetical_group_quotas_for_today(
     log.debug(f"Total bytes available for today: {total_daily_bytes}.")
 
     group_config_dict = gen_group_config_dict_for_sqt(
-        total_daily_bytes, user_group_name=group_name
+        total_daily_bytes,
+        user_group_name=group_name,
+        old_user_group_name=old_group_name,
     )
 
     quota_config_dict = sqt.gen_quota_config_dict(total_daily_bytes, group_config_dict)
@@ -600,7 +602,10 @@ def calculate_max_num_bytes(group_config_dict, total_daily_bytes: float, *, tol=
 
 
 def gen_group_config_dict_for_sqt(
-    total_daily_bytes_available, user_group_name=None, tol=1e-6
+    total_daily_bytes_available,
+    user_group_name=None,
+    old_user_group_name=None,
+    tol=1e-6,
 ):
     group_config_dict = {}
 
@@ -628,6 +633,9 @@ def gen_group_config_dict_for_sqt(
     # Should make this behavior more exlicit. Passing user_group_name is changing function...
     if user_group_name:
         group_config_dict[user_group_name]["n"] += 1
+
+    if old_user_group_name:
+        group_config_dict[old_user_group_name]["n"] -= 1
 
     # Also some hidden behavior here. If n<= 0, max not incremented.
     group_config_dict = calculate_max_num_bytes(
@@ -802,7 +810,7 @@ def create_user(username, radius_password, group_name):
         raise RuntimeError("User creation now allowed before 00:01.")
 
     group_quotas = calculate_hypothetical_group_quotas_for_today(
-        group_name, ACCOUNT_BILLING_DAY
+        group_name, ACCOUNT_BILLING_DAY, old_group_name
     )
     log.debug(f"Hypothetical quota available for groups: {group_quotas}")
 
@@ -816,6 +824,38 @@ def create_user(username, radius_password, group_name):
     # Change to set up temporary quota, then disable whenever quota update is called.
     sqlm.create_user_usage(username, group_name)
     log.debug(f"Inserted user {username} into usage db.")
+
+
+def change_user_group(username, new_group_name, old_group_name):
+
+    user_exists = sqlm.check_if_user_exists(username)
+
+    if not user_exists:
+        raise sqlm.UserNameError(
+            f"Failed to add user {username} to group {new_group_name}: User does not exist."
+        )
+
+    group_exists = sqlm.check_if_group_exists(new_group_name)
+
+    if not group_exists:
+        raise sqlm.GroupNameError(
+            f"Failed to add user {username} to group {new_group_name}: Group does not exist."
+        )
+
+    group_quotas = calculate_hypothetical_group_quotas_for_today(
+        new_group_name, ACCOUNT_BILLING_DAY, old_group_name=old_group_name
+    )
+    log.debug(f"Hypothetical quota available for groups: {group_quotas}")
+
+    apply_new_quotas(group_quotas)
+    log.debug(f"Updated quotas for all groups:")
+    sqlh.log_all_table_information("groups")
+
+    sqlm.remove_user_from_group_usage(username)
+    log.debug(f"Removed user {username} from group {old_group_name}.")
+
+    sqlm.insert_user_into_group_usage(new_group_name, username)
+    log.debug(f"Inserted user {username} into group {new_group_name}.")
 
 
 def log_in_user(username, user_ip, user_mac):

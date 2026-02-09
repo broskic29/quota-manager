@@ -450,7 +450,7 @@ def insert_user_into_group_usage(
     JOIN groups g ON g.group_name = ?
     WHERE u.username = ?
     """,
-        (username, group_name),
+        (group_name, username),
     )
     con.commit()
     con.close()
@@ -710,6 +710,28 @@ def delete_user_usage(
     # Delete from authentication table
     con.execute("PRAGMA foreign_keys = ON;")
     cur.execute("DELETE FROM users WHERE username = ?", (username,))
+    con.commit()
+    con.close()
+    log.info(f"User '{username}' deleted successfully.")
+
+
+def delete_user_from_group_users(
+    username,
+    db_path=sqlh.USAGE_TRACKING_DB_PATH,
+):
+    con = sqlite3.connect(
+        db_path, timeout=30, isolation_level=None
+    )  # Connects to database
+    cur = con.cursor()
+    # Delete from authentication table
+    con.execute("PRAGMA foreign_keys = ON;")
+    cur.execute(
+        """
+        DELETE FROM group_users
+        WHERE user_id = (SELECT id FROM users WHERE username = ?)
+        """,
+        (username,),
+    )
     con.commit()
     con.close()
     log.info(f"User '{username}' deleted successfully.")
@@ -1056,6 +1078,23 @@ def fetch_group_quota_info_usage(db_path=sqlh.USAGE_TRACKING_DB_PATH):
         """,
     )
     return cur.fetchall()
+
+
+def fetch_all_users_with_groups_usage(db_path=sqlh.USAGE_TRACKING_DB_PATH):
+    con = sqlite3.connect(db_path, timeout=30, isolation_level=None)
+    cur = con.cursor()
+    cur.execute(
+        """
+        SELECT u.username, g.group_name
+        FROM users u
+        LEFT JOIN group_users gu ON gu.user_id = u.id
+        LEFT JOIN groups g ON g.id = gu.group_id
+        ORDER BY u.username
+        """
+    )
+    rows = cur.fetchall()
+    con.close()
+    return rows
 
 
 def fetch_desired_quota_ratios(db_path=sqlh.USAGE_TRACKING_DB_PATH):

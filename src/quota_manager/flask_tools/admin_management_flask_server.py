@@ -162,8 +162,84 @@ def root():
 @admin_management_app.route("/admin/users")
 @flu.require_admin_auth
 def manage_users():
+    users_rows = sqlm.fetch_all_users_with_groups_usage() or []
+    groups = sqlm.get_groups_usage() or []
+
+    users = [{"username": u, "group_name": g} for (u, g) in users_rows]
+
+    return render_template_string(
+        ahtml.manage_users_page,
+        users=users,
+        groups=groups,
+    )
+
+
+@admin_management_app.route("/admin/users/<username>/group", methods=["POST"])
+@flu.require_admin_auth
+def change_user_group(username):
+    error = None
+
     users = sqlm.fetch_all_usernames_usage()
-    return render_template_string(ahtml.manage_users_page, users=users or [])
+
+    existing_groups = []
+
+    existing_groups, error = flu.safe_call(
+        sqlm.get_groups_usage,
+        error,
+        None,
+    )
+
+    if error:
+        return render_template_string(
+            ahtml.new_user_form, groups=existing_groups, error=error
+        )
+
+    if request.method == "POST":
+        data = request.form
+        new_group_name = data.get("group_name")
+
+        GROUP_CHANGE_ERROR_MESSAGES = {
+            sqlm.UserNameError: None,
+            sqlm.GroupNameError: None,
+            qm.QuotaAllottmentError: None,
+            flu.UndefinedException: f"Internal error changing group for user {username}. Please reload page.\n",
+        }
+
+        old_group_name, error = flu.safe_call(
+            sqlm.check_which_group_user_is_in,
+            error,
+            GROUP_CHANGE_ERROR_MESSAGES,
+            username,
+        )
+
+        if error:
+            return render_template_string(
+                ahtml.manage_users_page, users=users or [], groups=existing_groups or []
+            )
+
+        _, error = flu.safe_call(
+            qm.change_user_group,
+            error,
+            GROUP_CHANGE_ERROR_MESSAGES,
+            username,
+            new_group_name,
+            old_group_name,
+        )
+
+        if error:
+            return render_template_string(
+                ahtml.manage_users_page, users=users or [], groups=existing_groups or []
+            )
+
+        log.info(f"Succesfully assigned {username} to group {new_group_name}.")
+        return render_template_string(
+            ahtml.success_page,
+            message=f"Succesfully assigned {username} to group {new_group_name}.",
+        )
+
+    return render_template_string(
+        ahtml.manage_users_page, users=users or [], groups=existing_groups or []
+    )
 
 
 @admin_management_app.route("/admin/users/<username>/delete", methods=["POST"])

@@ -551,6 +551,16 @@ manage_users_page = """
     color: #777;
     padding: 2rem 0;
   }
+
+    select {
+    padding: 0.55rem 0.7rem;
+    border-radius: 8px;
+    border: 1px solid #d5dbe3;
+    background: white;
+    font-weight: 600;
+    color: #222;
+    }
+
 </style>
 </head>
 
@@ -565,24 +575,36 @@ manage_users_page = """
     </div>
 
     {% if users %}
-      {% for u in users %}
+        {% for u in users %}
         <div class="card">
-          <div class="user-name">
+            <div class="user-name">
             <i class="fa-solid fa-user"></i>
-            {{ u }}
-          </div>
+            {{ u.username }}
+            </div>
 
-          <form method="post" action="/admin/users/{{ u }}/delete">
-            <button
-              class="danger"
-              type="submit"
-              onclick="return confirm('Delete user {{u}}?')"
-            >
-              <i class="fa-solid fa-trash"></i> Delete
-            </button>
-          </form>
+            <div style="display:flex; gap: 0.5rem; align-items:center;">
+            <form method="post" action="/admin/users/{{ u.username }}/group">
+                <select name="group_name" onchange="this.form.submit()">
+                {% for g in groups %}
+                    <option value="{{ g }}" {% if u.group_name == g %}selected{% endif %}>
+                    {{ g }}
+                    </option>
+                {% endfor %}
+                </select>
+            </form>
+
+            <form method="post" action="/admin/users/{{ u.username }}/delete">
+                <button
+                class="danger"
+                type="submit"
+                onclick="return confirm('Delete user {{u.username}}?')"
+                >
+                <i class="fa-solid fa-trash"></i> Delete
+                </button>
+            </form>
+            </div>
         </div>
-      {% endfor %}
+        {% endfor %}
     {% else %}
       <div class="empty">No users found.</div>
     {% endif %}

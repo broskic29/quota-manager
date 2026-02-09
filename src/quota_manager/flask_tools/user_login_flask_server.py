@@ -7,7 +7,6 @@ from flask import (
     url_for,
     session,
 )
-from urllib.parse import quote
 
 import logging
 
