@@ -1187,3 +1187,29 @@ def ip_enforce_timeout(ip_addr, mac_addr):
 
 def wipe_ip_neigh_db():
     sqlh.wipe_table(sqlm.IP_TIMEOUT_TABLE_NAME, sqlh.USAGE_TRACKING_DB_PATH)
+
+
+def system_daily_wipe_check(now):
+    date_str = now.date().isoformat()
+
+    system_state = sqlm.fetch_system_state()
+
+    if date_str != system_state["system_date"]:
+        return False
+    return True
+
+
+def system_monthly_wipe_check():
+
+    system_state = sqlm.fetch_system_state()
+
+    return system_state["wiped_this_month"]
+
+
+def update_system_date(now):
+    date_str = now.date().isoformat()
+    sqlm.update_system_state_usage(system_date=date_str)
+
+
+def update_monthly_wipe():
+    sqlm.update_system_state_usage(wiped_this_month=True)

@@ -353,6 +353,7 @@ def admin_config():
 
         sqlm.update_config_usage(
             name=cfg["name"],
+            system_name=cfg["system_name"],
             total_bytes=total_gb * 1024**3,
             throttling_enabled=throttling_enabled,
             active_days=",".join(str(d) for d in active_days),

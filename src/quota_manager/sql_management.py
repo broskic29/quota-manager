@@ -4,6 +4,7 @@ import json
 
 from pathlib import Path
 import subprocess
+import datetime as dt
 
 import quota_manager.sqlite_helper_functions as sqlh
 
@@ -15,6 +16,7 @@ GROUP_TABLE_NAME = "groups"
 GROUP_USERS_TABLE_NAME = "group_users"
 RADIUS_TABLE_NAME = "radcheck"
 CONFIGS_TABLE_NAME = "configs"
+SYSTEM_STATE_TABLE_NAME = "system_state"
 
 LOGGED_OUT = 0
 LOGGED_IN = 1
@@ -120,12 +122,6 @@ def init_usage_db():
         ):
             log.info(f"sql_management: Creating table '{GROUP_TABLE_NAME}'.")
 
-        # For now, min and max number of bytes, as well as min quota ratio are hard coded
-        # to avoid exposing these to admin that is not me. Need to remember this as well as remember to change this
-        # in future.
-        #
-        # Max num bytes currently hard coded at 500 GB.
-        # Min num bytes currently hard coded at 150 MB.
         cur.execute(
             f"""
         CREATE TABLE IF NOT EXISTS {GROUP_TABLE_NAME} (
@@ -194,12 +190,33 @@ def init_usage_db():
         CREATE TABLE IF NOT EXISTS {CONFIGS_TABLE_NAME} (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             name TEXT NOT NULL,
+            system_name TEXT NOT NULL,
             total_monthly_bytes_purchased INTEGER NOT NULL,
             throttling_enabled INTEGER NOT NULL,
             active_days TEXT NOT NULL,
             mac_set_limitation INTEGER NOT NULL,
             allowed_macs TEXT,
             active_config INTEGER
+        );
+        """
+        )
+
+        if not sqlh.check_if_table_exists(
+            SYSTEM_STATE_TABLE_NAME, sqlh.USAGE_TRACKING_DB_PATH
+        ):
+            log.info(f"sql_management: Creating table '{SYSTEM_STATE_TABLE_NAME}'.")
+
+        cur.execute(
+            f"""
+        CREATE TABLE IF NOT EXISTS {SYSTEM_STATE_TABLE_NAME} (
+            system_name TEXT PRIMARY KEY,
+            system_date TEXT NOT NULL,
+            wiped_this_month INTEGER NOT NULL,
+            total_monthly_bytes INTEGER,
+            all_time_bytes INTEGER,
+            num_users INTEGER,
+            num_groups INTEGER,
+            UNIQUE(system_name)
         );
         """
         )
@@ -211,6 +228,7 @@ def init_usage_db():
             # Default: Mon-Fri active (0-4), throttling off, mac limitation off
             create_config_usage(
                 name="default",
+                system_name="dbtti",
                 total_bytes=0,  # YOU should set this in admin page
                 throttling_enabled=False,
                 active_days=[0, 1, 2, 3, 4],
@@ -219,8 +237,27 @@ def init_usage_db():
                 active_config=1,
             )
 
+        if sqlh.check_if_table_empty(
+            SYSTEM_STATE_TABLE_NAME, sqlh.USAGE_TRACKING_DB_PATH
+        ):
+
+            tz = dt.timezone(dt.timedelta(hours=sqlh.UTC_OFFSET))
+            now = dt.datetime.now(tz)
+            date_str = now.date().isoformat()
+
+            config = fetch_active_config()
+
+            # Default: Mon-Fri active (0-4), throttling off, mac limitation off
+            initialize_system_state_usage(
+                system_name=config["system_name"],
+                system_date=date_str,
+                wiped_this_month=False,
+                db_path=sqlh.USAGE_TRACKING_DB_PATH,
+            )
+
     except Exception as e:
         log.error(f"Exception: {e}. Failed to create usage_tracking database!")
+        raise Exception(e)
 
 
 def insert_user_radius(
@@ -729,6 +766,7 @@ def delete_user_usage(
 
 def create_config_usage(
     name: str,
+    system_name: str,
     total_bytes: int,
     throttling_enabled: bool,
     active_days: list[int],
@@ -750,11 +788,12 @@ def create_config_usage(
 
     cur.execute(
         f"""
-    INSERT INTO {CONFIGS_TABLE_NAME} (name, total_monthly_bytes_purchased, throttling_enabled, active_days, mac_set_limitation, allowed_macs, active_config)
-    VALUES (?, ?, ?, ?, ?, ?, ?)
+    INSERT INTO {CONFIGS_TABLE_NAME} (name, system_name, total_monthly_bytes_purchased, throttling_enabled, active_days, mac_set_limitation, allowed_macs, active_config)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
     """,
         (
             name,
+            system_name,
             total_bytes,
             throttling_enabled,
             active_days,
@@ -766,6 +805,97 @@ def create_config_usage(
 
     con.commit()
     con.close()
+
+
+def initialize_system_state_usage(
+    system_name: str,
+    system_date: str,
+    wiped_this_month: bool,
+    total_monthly_bytes: int | None = None,
+    all_time_bytes: int | None = None,
+    num_users: int | None = None,
+    num_groups: int | None = None,
+    db_path=sqlh.USAGE_TRACKING_DB_PATH,
+):
+
+    con = sqlite3.connect(
+        db_path, timeout=30, isolation_level=None
+    )  # Connects to database
+    cur = con.cursor()
+
+    cur.execute(
+        f"""
+    INSERT INTO {SYSTEM_STATE_TABLE_NAME} (system_name, system_date, wiped_this_month, total_monthly_bytes, all_time_bytes, num_users, num_groups)
+    VALUES (?, ?, ?, ?, ?, ?, ?)
+    """,
+        (
+            system_name,
+            system_date,
+            wiped_this_month,
+            total_monthly_bytes,
+            all_time_bytes,
+            num_users,
+            num_groups,
+        ),
+    )
+
+    con.commit()
+    con.close()
+
+
+def update_system_state_usage(
+    system_name: str | None = None,
+    system_date: str | None = None,
+    wiped_this_month: bool | None = None,
+    total_monthly_bytes: int | None = None,
+    all_time_bytes: int | None = None,
+    num_users: int | None = None,
+    num_groups: int | None = None,
+    db_path=sqlh.USAGE_TRACKING_DB_PATH,
+):
+    row = fetch_system_state_row()
+
+    if row:
+        columns = [
+            column
+            for column in sqlh.fetch_all_columns(SYSTEM_STATE_TABLE_NAME, db_path)
+        ]
+        set_clause = ", ".join(f"{col} = ?" for col in columns)
+        values = list(row)
+        log.debug(f"Values for system {values[0]}: {values}")
+        values[0] = system_name if system_name is not None else values[0]
+        values[1] = system_date if system_date is not None else values[1]
+        values[2] = wiped_this_month if wiped_this_month is not None else values[2]
+        values[3] = (
+            total_monthly_bytes if total_monthly_bytes is not None else values[3]
+        )
+        values[4] = all_time_bytes if all_time_bytes is not None else values[4]
+        values[5] = num_users if num_users is not None else values[5]
+        values[6] = num_groups if num_groups is not None else values[6]
+
+        con = sqlite3.connect(
+            db_path, timeout=30, isolation_level=None
+        )  # Connects to database
+        cur = con.cursor()
+
+        cur.execute(
+            f"""
+            UPDATE {SYSTEM_STATE_TABLE_NAME}
+            SET {set_clause}
+            WHERE system_name = ?
+            """,
+            values + [values[0]],
+        )
+
+        log.info(f"System {values[0]} state successfully updated.")
+        sqlh.log_all_table_information(
+            SYSTEM_STATE_TABLE_NAME, db_path=sqlh.USAGE_TRACKING_DB_PATH
+        )
+
+        con.commit()
+        con.close()
+    else:
+        raise RuntimeError(f"System state information does not exist.")
 
 
 def select_config_row(name, db_path=sqlh.USAGE_TRACKING_DB_PATH):
@@ -833,7 +963,7 @@ def update_config_usage(
 
         log.info(f"Config {name} successfully updated.")
         sqlh.log_all_table_information(
-            USAGE_TRACKING_TABLE_NAME, db_path=sqlh.USAGE_TRACKING_DB_PATH
+            CONFIGS_TABLE_NAME, db_path=sqlh.USAGE_TRACKING_DB_PATH
         )
 
         con.commit()
@@ -849,7 +979,7 @@ def fetch_active_config_row(db_path=sqlh.USAGE_TRACKING_DB_PATH):
     cur = con.cursor()
     cur.execute(
         f"""
-        SELECT id, name, total_monthly_bytes_purchased, throttling_enabled, active_days,
+        SELECT id, name, system_name, total_monthly_bytes_purchased, throttling_enabled, active_days,
                mac_set_limitation, allowed_macs, active_config
         FROM {CONFIGS_TABLE_NAME}
         WHERE active_config = 1
@@ -878,12 +1008,13 @@ def fetch_active_config(db_path=sqlh.USAGE_TRACKING_DB_PATH) -> dict:
     cfg = {
         "id": row[0],
         "name": row[1],
-        "total_monthly_bytes_purchased": int(row[2]),
-        "throttling_enabled": bool(row[3]),
-        "active_days": row[4] or "",
-        "mac_set_limitation": bool(row[5]),
-        "allowed_macs": row[6] or "",
-        "active_config": row[7],
+        "system_name": row[2],
+        "total_monthly_bytes_purchased": int(row[3]),
+        "throttling_enabled": bool(row[4]),
+        "active_days": row[5] or "",
+        "mac_set_limitation": bool(row[6]),
+        "allowed_macs": row[7] or "",
+        "active_config": row[8],
     }
 
     # parse active_days -> list[int]
@@ -901,6 +1032,47 @@ def fetch_active_config(db_path=sqlh.USAGE_TRACKING_DB_PATH) -> dict:
         if m:
             macs.append(m)
     cfg["allowed_macs_list"] = macs
+
+    return cfg
+
+
+def fetch_system_state_row(db_path=sqlh.USAGE_TRACKING_DB_PATH):
+
+    config = fetch_active_config()
+
+    con = sqlite3.connect(db_path, timeout=30, isolation_level=None)
+    cur = con.cursor()
+    cur.execute(
+        f"""
+        SELECT system_name, system_date, wiped_this_month, total_monthly_bytes, all_time_bytes, num_users, num_groups
+        FROM {SYSTEM_STATE_TABLE_NAME}
+        WHERE system_name = ?
+        LIMIT 1
+        """,
+        (config["system_name"],),
+    )
+    row = cur.fetchone()
+    con.close()
+    return row
+
+
+def fetch_system_state(db_path=sqlh.USAGE_TRACKING_DB_PATH) -> dict:
+    row = fetch_system_state_row(db_path)
+
+    # row layout depends on select_config_row vs fetch_active_config_row:
+    # select_config_row returns "*", so safest is to re-query by name using columns:
+    # We'll standardize: if row came from select_config_row, its indexes match table definition.
+    # Table is: id, name, total_monthly_bytes_purchased, throttling_enabled, active_days,
+    #           mac_set_limitation, allowed_macs, active_config
+    cfg = {
+        "system_name": row[0],
+        "system_date": row[1],
+        "wiped_this_month": bool(row[2]),
+        "total_monthly_bytes": row[3],
+        "all_time_bytes": row[4],
+        "num_users": row[5],
+        "num_groups": row[6],
+    }
 
     return cfg
 
@@ -1376,7 +1548,7 @@ def usage_monthly_wipe(db_path=sqlh.USAGE_TRACKING_DB_PATH):
     cur.execute(
         """
         UPDATE users
-        SET monthly_total_bytes = 0
+        SET monthly_usage_bytes = 0
         """,
     )
     con.commit()

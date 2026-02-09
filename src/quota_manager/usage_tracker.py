@@ -93,6 +93,23 @@ def usage_updater(stop_event: threading.Event):
             break
 
         try:
+            tz = dt.timezone(dt.timedelta(hours=UTC_OFFSET))
+            now = dt.datetime.now(tz)
+
+            log.debug("Checking to see if system was daily wiped...")
+            system_daily_wiped = qm.system_daily_wipe_check(now)
+            if not system_daily_wiped:
+                log.debug("System not daily wiped, wiping system...")
+                daily_events(now)
+                qm.update_system_date(now)
+
+            log.debug("Checking to see if system was monthly wiped...")
+            system_monthly_wiped = qm.system_monthly_wipe_check()
+            if not system_monthly_wiped:
+                log.debug("System not monthly wiped, wiping system...")
+                monthly_events(now)
+                qm.update_monthly_wipe()
+
             log.debug("Updating user byte totals...")
             usage_dict = qm.update_all_users_bytes()
             log.debug(usage_dict)
