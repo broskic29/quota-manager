@@ -26,6 +26,12 @@ class RestrictedDayError(Exception):
     pass
 
 
+class RestrictedUserError(Exception):
+    """Raised when an restricted user attempts to log in."""
+
+    pass
+
+
 class QuotaAllottmentError(Exception):
     """Impossible to calculate quota for user with current constraints. Please change desired quota ratio for group."""
 
@@ -108,9 +114,11 @@ def initialize_user_state_nftables(username, throttling=False):
 
     exceeds_quota, _, _ = evaluate_user_bytes_against_quota(username)
 
+    config = sqlm.fetch_active_config()
+
     # All of these nftables functions are atomic, no worries
     if exceeds_quota:
-        if throttling:
+        if config["throttling_enabled"]:
             log.debug(
                 f"Recently logged in user {username} exceeds quota. Throttling..."
             )
@@ -575,10 +583,12 @@ def compute_remaining_weekdays(now, reset_day):
         next_monthly = now + dt.timedelta(days=(32 - now.day))
         next_monthly = next_monthly.replace(day=reset_day)
 
+    config = sqlm.fetch_active_config()
+
     cur = now  # start today
     count = 1
     while cur < next_monthly:
-        if cur.weekday() < 5:  # 0=Mon ... 4=Fri
+        if cur.weekday() in config["active_days_list"]:  # 0=Mon ... 4=Fri
             count += 1
         cur += dt.timedelta(days=1)
     return count
@@ -810,7 +820,7 @@ def create_user(username, radius_password, group_name):
         raise RuntimeError("User creation now allowed before 00:01.")
 
     group_quotas = calculate_hypothetical_group_quotas_for_today(
-        group_name, ACCOUNT_BILLING_DAY, old_group_name
+        group_name, ACCOUNT_BILLING_DAY
     )
     log.debug(f"Hypothetical quota available for groups: {group_quotas}")
 
@@ -859,6 +869,18 @@ def change_user_group(username, new_group_name, old_group_name):
 
 
 def log_in_user(username, user_ip, user_mac):
+
+    config = sqlm.fetch_active_config()
+
+    tz = dt.timezone(dt.timedelta(hours=sqlh.UTC_OFFSET))
+    now = dt.datetime.now(tz)
+
+    if now.day not in config["active_days_list"]:
+        raise RestrictedDayError("Login not allowed on restricted days.")
+
+    if config["mac_set_limitation"]:
+        if user_mac not in config["allowed_macs"]:
+            raise RestrictedUserError("User device not in list of allowed devices.")
 
     if sqlm.check_if_user_exists(username):
 
@@ -970,7 +992,30 @@ def delete_user_from_system(username):
 
     remove_user_from_nftables(username)
 
+    tz = dt.timezone(dt.timedelta(hours=sqlh.UTC_OFFSET))
+    now = dt.datetime.now(tz)
+
+    update_group_quotas(now, ACCOUNT_BILLING_DAY)
+
     log.info(f"Successfully deleted user {username} from system.")
+
+
+def delete_group_from_system(group_name):
+    group_exists = sqlm.check_if_group_exists(group_name)
+
+    if not group_exists:
+        raise sqlm.GroupNameError(
+            f"Failed to delete group {group_name}: Group does not exist."
+        )
+
+    sqlm.delete_group_usage(group_name)
+
+    tz = dt.timezone(dt.timedelta(hours=sqlh.UTC_OFFSET))
+    now = dt.datetime.now(tz)
+
+    update_group_quotas(now, ACCOUNT_BILLING_DAY)
+
+    log.info(f"Successfully deleted group {group_name} from system.")
 
 
 def delete_all_users_from_system():

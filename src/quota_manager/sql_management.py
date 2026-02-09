@@ -207,6 +207,18 @@ def init_usage_db():
         con.commit()
         con.close()
 
+        if sqlh.check_if_table_empty(CONFIGS_TABLE_NAME, sqlh.USAGE_TRACKING_DB_PATH):
+            # Default: Mon-Fri active (0-4), throttling off, mac limitation off
+            create_config_usage(
+                name="default",
+                total_bytes=0,  # YOU should set this in admin page
+                throttling_enabled=False,
+                active_days=[0, 1, 2, 3, 4],
+                mac_set_limitation=False,
+                allowed_macs=None,
+                active_config=1,
+            )
+
     except Exception as e:
         log.error(f"Exception: {e}. Failed to create usage_tracking database!")
 
@@ -715,28 +727,6 @@ def delete_user_usage(
     log.info(f"User '{username}' deleted successfully.")
 
 
-def delete_user_from_group_users(
-    username,
-    db_path=sqlh.USAGE_TRACKING_DB_PATH,
-):
-    con = sqlite3.connect(
-        db_path, timeout=30, isolation_level=None
-    )  # Connects to database
-    cur = con.cursor()
-    # Delete from authentication table
-    con.execute("PRAGMA foreign_keys = ON;")
-    cur.execute(
-        """
-        DELETE FROM group_users
-        WHERE user_id = (SELECT id FROM users WHERE username = ?)
-        """,
-        (username,),
-    )
-    con.commit()
-    con.close()
-    log.info(f"User '{username}' deleted successfully.")
-
-
 def create_config_usage(
     name: str,
     total_bytes: int,
@@ -819,12 +809,13 @@ def update_config_usage(
         set_clause = ", ".join(f"{col} = ?" for col in columns)
         values = list(row)
         log.debug(f"Values for config {name}: {values}")
-        values[1] = total_bytes if total_bytes is not None else values[1]
-        values[2] = throttling_enabled if throttling_enabled is not None else values[2]
-        values[3] = active_days if active_days else values[3]
-        values[4] = mac_set_limitation if mac_set_limitation else values[4]
-        values[5] = allowed_macs if allowed_macs else values[5]
-        values[6] = active_config if active_config else values[6]
+        values[1] = name if name is not None else values[1]
+        values[2] = total_bytes if total_bytes is not None else values[2]
+        values[3] = throttling_enabled if throttling_enabled is not None else values[3]
+        values[4] = active_days if active_days is not None else values[4]
+        values[5] = mac_set_limitation if mac_set_limitation is not None else values[5]
+        values[6] = allowed_macs if allowed_macs is not None else values[6]
+        values[7] = active_config if active_config is not None else values[7]
 
         con = sqlite3.connect(
             db_path, timeout=30, isolation_level=None

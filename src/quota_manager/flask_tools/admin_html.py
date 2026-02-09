@@ -848,3 +848,260 @@ manage_groups_page = """
 </body>
 </html>
 """
+
+
+config_page = """
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>System Config</title>
+
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.0/css/all.min.css" integrity="sha512-..." crossorigin="anonymous" referrerpolicy="no-referrer" />
+
+<style>
+  body {
+    font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+    margin: 0;
+    padding: 0;
+    background: #f4f6f8;
+    display: flex;
+    justify-content: center;
+    align-items: flex-start;
+    min-height: 100vh;
+  }
+
+  .container {
+    background: white;
+    padding: 2rem;
+    border-radius: 12px;
+    box-shadow: 0 4px 20px rgba(0,0,0,0.1);
+    width: 90%;
+    max-width: 650px;
+    margin: 2rem 0;
+  }
+
+  .header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 1.5rem;
+  }
+
+  h1 {
+    margin: 0;
+    font-size: 2rem;
+    color: #333;
+  }
+
+  .back-link {
+    text-decoration: none;
+    color: #007bff;
+    font-weight: 600;
+    display: inline-flex;
+    align-items: center;
+    gap: 0.5rem;
+  }
+
+  .back-link:hover {
+    text-decoration: underline;
+  }
+
+  .card {
+    border: 1px solid #e6e9ee;
+    border-radius: 12px;
+    padding: 1rem;
+    background: #fff;
+    margin-bottom: 0.9rem;
+  }
+
+  .section-title {
+    font-weight: 700;
+    color: #222;
+    margin-bottom: 0.75rem;
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+  }
+
+  .row {
+    display: flex;
+    flex-direction: column;
+    gap: 0.35rem;
+    margin-bottom: 0.9rem;
+  }
+
+  label {
+    font-weight: 600;
+    color: #333;
+  }
+
+  .hint {
+    font-size: 0.9rem;
+    color: #666;
+    font-weight: 500;
+  }
+
+  input[type="number"],
+  input[type="text"] {
+    padding: 0.65rem 0.75rem;
+    border-radius: 10px;
+    border: 1px solid #d5dbe3;
+    font-size: 1rem;
+    outline: none;
+    transition: border-color 0.15s ease;
+  }
+
+  input[type="number"]:focus,
+  input[type="text"]:focus {
+    border-color: #007bff;
+  }
+
+  .toggle-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 1rem;
+    padding: 0.65rem 0.75rem;
+    border: 1px solid #e6e9ee;
+    border-radius: 12px;
+    background: #fafbfc;
+    margin-bottom: 0.9rem;
+  }
+
+  .toggle-row .left {
+    display: flex;
+    flex-direction: column;
+    gap: 0.2rem;
+  }
+
+  input[type="checkbox"] {
+    transform: scale(1.2);
+    accent-color: #007bff;
+  }
+
+  .days {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.5rem;
+    margin-top: 0.4rem;
+  }
+
+  .day-pill {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.45rem;
+    padding: 0.45rem 0.65rem;
+    border: 1px solid #e6e9ee;
+    border-radius: 999px;
+    background: #fafbfc;
+    font-weight: 600;
+    color: #333;
+    user-select: none;
+  }
+
+  .actions {
+    display: flex;
+    justify-content: flex-end;
+    margin-top: 1rem;
+  }
+
+  button {
+    padding: 0.6rem 0.9rem;
+    font-size: 0.95rem;
+    font-weight: bold;
+    color: white;
+    background-color: #007bff;
+    border: none;
+    border-radius: 8px;
+    cursor: pointer;
+    display: inline-flex;
+    align-items: center;
+    gap: 0.4rem;
+    transition: background-color 0.2s ease;
+  }
+
+  button:hover {
+    background-color: #0056b3;
+  }
+</style>
+</head>
+
+<body>
+  <div class="container">
+
+    <div class="header">
+      <h1>System Config</h1>
+      <a class="back-link" href="/admin">
+        <i class="fa-solid fa-arrow-left"></i> Back
+      </a>
+    </div>
+
+    <form method="post">
+
+      <div class="card">
+        <div class="section-title">
+          <i class="fa-solid fa-database"></i> Bandwidth & Policy
+        </div>
+
+        <div class="row">
+          <label for="total_gb">Total monthly bytes purchased (GB)</label>
+          <div class="hint">Used to compute available bandwidth and downstream quotas.</div>
+          <input id="total_gb" type="number" name="total_gb" min="0" step="1" value="{{ total_gb }}" required>
+        </div>
+
+        <div class="toggle-row">
+          <div class="left">
+            <div style="font-weight:700; color:#222;">Throttling enabled</div>
+            <div class="hint">If enabled, users may be rate-limited after quota use.</div>
+          </div>
+          <input type="checkbox" name="throttling_enabled" value="1" {% if throttling_enabled %}checked{% endif %}>
+        </div>
+
+        <div class="row">
+          <label>Active days (0=Mon .. 6=Sun)</label>
+          <div class="hint">These days count as “system active” for quota calculations.</div>
+          <div class="days">
+            {% for d in range(7) %}
+              <label class="day-pill">
+                <input type="checkbox" name="active_days" value="{{d}}" {% if d in active_days %}checked{% endif %}>
+                {{ d }}
+              </label>
+            {% endfor %}
+          </div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="section-title">
+          <i class="fa-solid fa-shield-halved"></i> MAC Restrictions
+        </div>
+
+        <div class="toggle-row">
+          <div class="left">
+            <div style="font-weight:700; color:#222;">MAC set limitation enabled</div>
+            <div class="hint">If enabled, only explicitly allowed MACs may authenticate.</div>
+          </div>
+          <input type="checkbox" name="mac_set_limitation" value="1" {% if mac_set_limitation %}checked{% endif %}>
+        </div>
+
+        <div class="row">
+          <label for="allowed_macs">Allowed MACs (comma separated)</label>
+          <div class="hint">Example: <code>aa:bb:cc:dd:ee:ff, 11:22:33:44:55:66</code></div>
+          <input id="allowed_macs" type="text" name="allowed_macs" value="{{ allowed_macs }}">
+        </div>
+      </div>
+
+      <div class="actions">
+        <button type="submit">
+          <i class="fa-solid fa-floppy-disk"></i> Save
+        </button>
+      </div>
+
+    </form>
+
+  </div>
+</body>
+</html>
+"""

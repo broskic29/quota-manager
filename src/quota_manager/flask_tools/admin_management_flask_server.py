@@ -328,5 +328,47 @@ def delete_group(group_name):
             message=f"Cannot delete group '{group_name}' because it has {members} users.",
         )
 
-    sqlm.delete_group_usage(group_name)
-    return redirect(url_for("manage_groups"))
+    qm.delete_group_from_system(group_name)
+
+    return render_template_string(
+        ahtml.success_page,
+        message=f"Successfully deleted group '{group_name}'.",
+    )
+
+
+@admin_management_app.route("/admin/config", methods=["GET", "POST"])
+@flu.require_admin_auth
+def admin_config():
+    cfg = sqlm.fetch_active_config()
+
+    if request.method == "POST":
+        total_gb = int(request.form.get("total_gb") or 0)
+        throttling_enabled = 1 if request.form.get("throttling_enabled") == "1" else 0
+        mac_set_limitation = 1 if request.form.get("mac_set_limitation") == "1" else 0
+
+        active_days = request.form.getlist("active_days")
+        active_days = [int(x) for x in active_days] if active_days else []
+
+        allowed_macs = (request.form.get("allowed_macs") or "").strip()
+
+        sqlm.update_config_usage(
+            name=cfg["name"],
+            total_bytes=total_gb * 1024**3,
+            throttling_enabled=throttling_enabled,
+            active_days=",".join(str(d) for d in active_days),
+            mac_set_limitation=mac_set_limitation,
+            allowed_macs=allowed_macs,
+            active_config=1,
+        )
+        return render_template_string(
+            ahtml.success_page, message=f"Successfully updated config."
+        )
+
+    return render_template_string(
+        ahtml.config_page,
+        total_gb=cfg["total_monthly_bytes_purchased"] // (1024**3),
+        throttling_enabled=cfg["throttling_enabled"],
+        active_days=cfg["active_days_list"],
+        mac_set_limitation=cfg["mac_set_limitation"],
+        allowed_macs=cfg["allowed_macs"],
+    )
