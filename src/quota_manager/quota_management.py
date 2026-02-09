@@ -875,7 +875,7 @@ def log_in_user(username, user_ip, user_mac):
     tz = dt.timezone(dt.timedelta(hours=sqlh.UTC_OFFSET))
     now = dt.datetime.now(tz)
 
-    if now.day not in config["active_days_list"]:
+    if now.weekday() not in config["active_days_list"]:
         raise RestrictedDayError("Login not allowed on restricted days.")
 
     if config["mac_set_limitation"]:

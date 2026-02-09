@@ -23,7 +23,7 @@ user_app.secret_key = "donbosco1815"
 log = logging.getLogger(__name__)
 
 GENERAL_ERROR_MESSAGE = {
-    flu.UndefinedException: "Internal error creating user. Please reload page.",
+    flu.UndefinedException: "Internal error logging in user. Please reload page.",
 }
 
 
@@ -43,7 +43,7 @@ def login():
         USER_LOGIN_ERROR_MESSAGES = {
             sqlh.IPAddressError: f"Login failed. IP address for user {username} could not be determined. Please disconnect from network and try again.",
             sqlm.UserNameError: f"Failed attempting to log in user {username}: User does not exist.",
-            flu.UndefinedException: "Internal error creating user. Please reload page.",
+            flu.UndefinedException: "Internal error logging in user. Please reload page.",
         }
 
         user_mac, error = flu.safe_call(
@@ -347,11 +347,19 @@ def windows_ncsi():
 @user_app.route("/check_network_status.txt")
 @user_app.route("/")
 def linux_nm():
+    username = session.get("username")
+    if username:
+        return redirect(url_for("user_dashboard", username=username), 302)
     session["captive"] = True
     return redirect("/login", 302)
 
 
 @user_app.errorhandler(404)
 def fallback(_):
+    # If already authenticated, shove them to dashboard instead of bouncing to login forever
+    username = session.get("username")
+    if username:
+        return redirect(url_for("user_dashboard", username=username), 302)
+
     session["captive"] = True
     return redirect("/login", 302)
