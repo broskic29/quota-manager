@@ -1,4 +1,8 @@
-import nftables
+try:
+    import nftables
+except ImportError:  # dev/test environments
+    nftables = None
+
 import json
 import logging
 
@@ -22,6 +26,9 @@ class NFTSetMissingElementError(Exception):
 
 
 def operation_on_set_element(operation, table_family, table_name, set_name, element):
+    if nftables is None:
+        raise RuntimeError("nftables python bindings not installed")
+
     nft = nftables.Nftables()
 
     cmd_dict = {
@@ -47,6 +54,9 @@ def operation_on_set_element(operation, table_family, table_name, set_name, elem
 
 
 def get_bytes_from_user(user_ip):
+    if nftables is None:
+        raise RuntimeError("nftables python bindings not installed")
+
     nft = nftables.Nftables()
     nft.set_json_output(True)
     rc, output, error = nft.cmd(
@@ -78,6 +88,9 @@ def get_bytes_from_user(user_ip):
 
 
 def get_bytes_from_all_users():
+    if nftables is None:
+        raise RuntimeError("nftables python bindings not installed")
+
     nft = nftables.Nftables()
     nft.set_json_output(True)
     rc, output, error = nft.cmd(
@@ -92,6 +105,9 @@ def get_bytes_from_all_users():
 
 
 def flush_set(table_family, table_name, set_name):
+
+    if nftables is None:
+        raise RuntimeError("nftables python bindings not installed")
 
     nft = nftables.Nftables()
     nft.set_json_output(True)  # optional, for easier debugging
@@ -116,6 +132,9 @@ def flush_set(table_family, table_name, set_name):
 
 
 def check_if_elem_in_set(test_elem, table_family, table_name, set_name):
+    if nftables is None:
+        raise RuntimeError("nftables python bindings not installed")
+
     nft = nftables.Nftables()
     nft.set_json_output(True)
 
@@ -150,6 +169,9 @@ def check_if_elem_in_set(test_elem, table_family, table_name, set_name):
 
 
 def pull_elements_from_custom_sets(table_family, table_name):
+    if nftables is None:
+        raise RuntimeError("nftables python bindings not installed")
+
     nft = nftables.Nftables()
     nft.set_json_output(True)
     # Build the JSON payload

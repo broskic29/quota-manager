@@ -1,7 +1,15 @@
 from flask import request, Response
-from pyrad.client import Client, Timeout
-from pyrad.dictionary import Dictionary
-from pyrad.packet import AccessRequest, AccessAccept
+
+try:
+    from pyrad.client import Client, Timeout
+    from pyrad.dictionary import Dictionary
+    from pyrad.packet import AccessRequest, AccessAccept
+except ImportError:
+    Client = Dictionary = AccessRequest = AccessAccept = None
+
+    class Timeout(Exception):
+        pass
+
 
 from functools import wraps
 from flask import Response
@@ -103,6 +111,9 @@ def error_appender(error, appendage):
 
 # --- FreeRADIUS authentication ---
 def authenticate_radius(username, password, ip_address, mac_address):
+    if Client is None:
+        raise RuntimeError("pyrad not installed (authenticate_radius unavailable)")
+
     srv = Client(
         server=RADIUS_SERVER,
         secret=RADIUS_SECRET,

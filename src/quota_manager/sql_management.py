@@ -263,8 +263,9 @@ def init_usage_db():
 def insert_user_radius(
     username,
     password,
-    db_path=sqlh.RADIUS_DB_PATH,
+    db_path=None,
 ):
+    db_path = db_path or sqlh.RADIUS_DB_PATH
     table_exists = sqlh.check_if_table_exists(
         table_name=RADIUS_TABLE_NAME, db_path=sqlh.RADIUS_DB_PATH
     )
@@ -305,8 +306,9 @@ def insert_user_radius(
 def modify_username_radius(
     old_username,
     new_username,
-    db_path=sqlh.RADIUS_DB_PATH,
+    db_path=None,
 ):
+    db_path = db_path or sqlh.RADIUS_DB_PATH
     con = sqlite3.connect(db_path, timeout=30, isolation_level=None)
     cursor = con.cursor()
 
@@ -324,8 +326,9 @@ def modify_username_radius(
 
 def get_user_password_radius(
     username,
-    db_path=sqlh.RADIUS_DB_PATH,
+    db_path=None,
 ):
+    db_path = db_path or sqlh.RADIUS_DB_PATH
     con = sqlite3.connect(db_path, timeout=30, isolation_level=None)
     cursor = con.cursor()
 
@@ -348,8 +351,9 @@ def get_user_password_radius(
 def modify_user_password_radius(
     username,
     password,
-    db_path=sqlh.RADIUS_DB_PATH,
+    db_path=None,
 ):
+    db_path = db_path or sqlh.RADIUS_DB_PATH
     con = sqlite3.connect(db_path, timeout=30, isolation_level=None)
     cursor = con.cursor()
 
@@ -367,8 +371,9 @@ def modify_user_password_radius(
 
 def delete_user_radius(
     username,
-    db_path=sqlh.RADIUS_DB_PATH,
+    db_path=None,
 ):
+    db_path = db_path or sqlh.RADIUS_DB_PATH
     con = sqlite3.connect(
         db_path, timeout=30, isolation_level=None
     )  # Connects to database
@@ -390,8 +395,9 @@ def insert_user_usage(
     username,
     mac_address,
     ip_address,
-    db_path=sqlh.USAGE_TRACKING_DB_PATH,
+    db_path=None,
 ):
+    db_path = db_path or sqlh.USAGE_TRACKING_DB_PATH
     con = sqlite3.connect(
         db_path, timeout=30, isolation_level=None
     )  # Connects to database
@@ -399,7 +405,7 @@ def insert_user_usage(
     cur.execute(
         """
     INSERT INTO users (username, mac_address, ip_address, daily_usage_bytes, monthly_usage_bytes, session_total_bytes, session_start_bytes, logged_in, over_quota)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
     """,
         (
             f"{username}",
@@ -421,8 +427,9 @@ def insert_user_usage(
 def create_group_usage(
     group_name,
     desired_quota_ratio,
-    db_path=sqlh.USAGE_TRACKING_DB_PATH,
+    db_path=None,
 ):
+    db_path = db_path or sqlh.USAGE_TRACKING_DB_PATH
     con = sqlite3.connect(
         db_path, timeout=30, isolation_level=None
     )  # Connects to database
@@ -441,8 +448,9 @@ def create_group_usage(
 
 def remove_user_from_group_usage(
     username,
-    db_path=sqlh.USAGE_TRACKING_DB_PATH,
+    db_path=None,
 ):
+    db_path = db_path or sqlh.USAGE_TRACKING_DB_PATH
     con = sqlite3.connect(
         db_path, timeout=30, isolation_level=None
     )  # Connects to database
@@ -464,8 +472,9 @@ def remove_user_from_group_usage(
 def insert_user_into_group_usage(
     group_name,
     username,
-    db_path=sqlh.USAGE_TRACKING_DB_PATH,
+    db_path=None,
 ):
+    db_path = db_path or sqlh.USAGE_TRACKING_DB_PATH
     remove_user_from_group_usage(username)
 
     # Raise error if user doesn't exist or if group doesn't exist
@@ -505,7 +514,8 @@ def insert_user_into_group_usage(
     con.close()
 
 
-def get_groups_usage(db_path=sqlh.USAGE_TRACKING_DB_PATH):
+def get_groups_usage(db_path=None):
+    db_path = db_path or sqlh.USAGE_TRACKING_DB_PATH
     con = sqlite3.connect(
         db_path, timeout=30, isolation_level=None
     )  # Connects to database
@@ -523,9 +533,9 @@ def get_groups_usage(db_path=sqlh.USAGE_TRACKING_DB_PATH):
     return [entry[0] for entry in res]
 
 
-def update_group_quota(
-    group_name, quota_byte_value, db_path=sqlh.USAGE_TRACKING_DB_PATH
-):
+def update_group_quota(group_name, quota_byte_value, db_path=None):
+    db_path = db_path or sqlh.USAGE_TRACKING_DB_PATH
+
     con = sqlite3.connect(
         db_path, timeout=30, isolation_level=None
     )  # Connects to database
@@ -551,12 +561,11 @@ def update_group_quota(
 def create_user_usage(
     username,
     group_name,
-    temporary_quota_bytes=None,
     mac_address="00:00:00:00:00",
     ip_address="0.0.0.0",
-    db_path=sqlh.USAGE_TRACKING_DB_PATH,
+    db_path=None,
 ):
-
+    db_path = db_path or sqlh.USAGE_TRACKING_DB_PATH
     # Raise error if user exists or if group doesn't exist
     user_exists = check_if_user_exists(username)
 
@@ -572,9 +581,6 @@ def create_user_usage(
         )
         raise GroupNameError(f"Group {group_name} does not exist.")
 
-    if temporary_quota_bytes is None:
-        temporary_quota_bytes = 0
-
     con = sqlite3.connect(
         db_path, timeout=30, isolation_level=None
     )  # Connects to database
@@ -583,10 +589,10 @@ def create_user_usage(
 
     cur.execute(
         """
-    INSERT INTO users (username, mac_address, ip_address, temporary_quota_bytes)
-    VALUES (?, ?, ?, ?)
+    INSERT INTO users (username, mac_address, ip_address)
+    VALUES (?, ?, ?)
     """,
-        (username, mac_address, ip_address, temporary_quota_bytes),
+        (username, mac_address, ip_address),
     )
 
     cur.execute(
@@ -603,7 +609,8 @@ def create_user_usage(
     con.close()
 
 
-def delete_group_usage(group_name, db_path=sqlh.USAGE_TRACKING_DB_PATH):
+def delete_group_usage(group_name, db_path=None):
+    db_path = db_path or sqlh.USAGE_TRACKING_DB_PATH
     con = sqlite3.connect(db_path, timeout=30, isolation_level=None)
     cur = con.cursor()
     cur.execute("PRAGMA foreign_keys = ON;")
@@ -613,9 +620,8 @@ def delete_group_usage(group_name, db_path=sqlh.USAGE_TRACKING_DB_PATH):
     log.info(f"Group '{group_name}' deleted successfully.")
 
 
-def update_group_desired_quota_ratio(
-    group_name, desired_quota_ratio, db_path=sqlh.USAGE_TRACKING_DB_PATH
-):
+def update_group_desired_quota_ratio(group_name, desired_quota_ratio, db_path=None):
+    db_path = db_path or sqlh.USAGE_TRACKING_DB_PATH
     con = sqlite3.connect(db_path, timeout=30, isolation_level=None)
     cur = con.cursor()
     cur.execute(
@@ -633,7 +639,8 @@ def update_group_desired_quota_ratio(
     )
 
 
-def count_users_in_group(group_name, db_path=sqlh.USAGE_TRACKING_DB_PATH) -> int:
+def count_users_in_group(group_name, db_path=None) -> int:
+    db_path = db_path or sqlh.USAGE_TRACKING_DB_PATH
     con = sqlite3.connect(db_path, timeout=30, isolation_level=None)
     cur = con.cursor()
     cur.execute(
@@ -651,7 +658,8 @@ def count_users_in_group(group_name, db_path=sqlh.USAGE_TRACKING_DB_PATH) -> int
     return int(res[0] if res else 0)
 
 
-def select_user_row(username, db_path=sqlh.USAGE_TRACKING_DB_PATH):
+def select_user_row(username, db_path=None):
+    db_path = db_path or sqlh.USAGE_TRACKING_DB_PATH
     con = sqlite3.connect(
         db_path, timeout=30, isolation_level=None
     )  # Connects to database
@@ -669,12 +677,32 @@ def select_user_row(username, db_path=sqlh.USAGE_TRACKING_DB_PATH):
     return row
 
 
+def select_group_row(group_name, db_path=None):
+    db_path = db_path or sqlh.USAGE_TRACKING_DB_PATH
+    con = sqlite3.connect(
+        db_path, timeout=30, isolation_level=None
+    )  # Connects to database
+    cur = con.cursor()
+    cur.execute(
+        """
+        SELECT *
+        FROM groups
+        WHERE group_name = ?
+        """,
+        (group_name,),
+    )
+    row = cur.fetchone()
+    con.close()
+    return row
+
+
 def login_user_usage(
     username,
     ip_address,
     mac_address,
-    db_path=sqlh.USAGE_TRACKING_DB_PATH,
+    db_path=None,
 ):
+    db_path = db_path or sqlh.USAGE_TRACKING_DB_PATH
     row = select_user_row(username)
 
     # This updates the user if it already exists,
@@ -720,7 +748,8 @@ def login_user_usage(
         )
 
 
-def logout_user_usage(username, db_path=sqlh.USAGE_TRACKING_DB_PATH):
+def logout_user_usage(username, db_path=None):
+    db_path = db_path or sqlh.USAGE_TRACKING_DB_PATH
 
     if check_if_user_exists(username):
 
@@ -750,8 +779,9 @@ def logout_user_usage(username, db_path=sqlh.USAGE_TRACKING_DB_PATH):
 
 def delete_user_usage(
     username,
-    db_path=sqlh.USAGE_TRACKING_DB_PATH,
+    db_path=None,
 ):
+    db_path = db_path or sqlh.USAGE_TRACKING_DB_PATH
     con = sqlite3.connect(
         db_path, timeout=30, isolation_level=None
     )  # Connects to database
@@ -773,8 +803,9 @@ def create_config_usage(
     mac_set_limitation: bool,
     allowed_macs: list[str] | None = None,
     active_config: int | None = None,
-    db_path=sqlh.USAGE_TRACKING_DB_PATH,
+    db_path=None,
 ):
+    db_path = db_path or sqlh.USAGE_TRACKING_DB_PATH
 
     active_days = ",".join(str(day) for day in active_days)
 
@@ -815,8 +846,9 @@ def initialize_system_state_usage(
     all_time_bytes: int | None = None,
     num_users: int | None = None,
     num_groups: int | None = None,
-    db_path=sqlh.USAGE_TRACKING_DB_PATH,
+    db_path=None,
 ):
+    db_path = db_path or sqlh.USAGE_TRACKING_DB_PATH
 
     con = sqlite3.connect(
         db_path, timeout=30, isolation_level=None
@@ -851,8 +883,9 @@ def update_system_state_usage(
     all_time_bytes: int | None = None,
     num_users: int | None = None,
     num_groups: int | None = None,
-    db_path=sqlh.USAGE_TRACKING_DB_PATH,
+    db_path=None,
 ):
+    db_path = db_path or sqlh.USAGE_TRACKING_DB_PATH
     row = fetch_system_state_row()
 
     if row:
@@ -898,7 +931,8 @@ def update_system_state_usage(
         raise RuntimeError(f"System state information does not exist.")
 
 
-def select_config_row(name, db_path=sqlh.USAGE_TRACKING_DB_PATH):
+def select_config_row(name, db_path=None):
+    db_path = db_path or sqlh.USAGE_TRACKING_DB_PATH
     con = sqlite3.connect(
         db_path, timeout=30, isolation_level=None
     )  # Connects to database
@@ -918,14 +952,16 @@ def select_config_row(name, db_path=sqlh.USAGE_TRACKING_DB_PATH):
 
 def update_config_usage(
     name: str | None = None,
+    system_name: str | None = None,
     total_bytes: int | None = None,
     throttling_enabled: bool | None = None,
     active_days: list[int] | None = None,
     mac_set_limitation: bool | None = None,
     allowed_macs: list[str] | None = None,
     active_config: int | None = None,
-    db_path=sqlh.USAGE_TRACKING_DB_PATH,
+    db_path=None,
 ):
+    db_path = db_path or sqlh.USAGE_TRACKING_DB_PATH
     row = select_config_row(name)
 
     # This updates the user if it already exists,
@@ -974,7 +1010,8 @@ def update_config_usage(
         )
 
 
-def fetch_active_config_row(db_path=sqlh.USAGE_TRACKING_DB_PATH):
+def fetch_active_config_row(db_path=None):
+    db_path = db_path or sqlh.USAGE_TRACKING_DB_PATH
     con = sqlite3.connect(db_path, timeout=30, isolation_level=None)
     cur = con.cursor()
     cur.execute(
@@ -991,7 +1028,8 @@ def fetch_active_config_row(db_path=sqlh.USAGE_TRACKING_DB_PATH):
     return row
 
 
-def fetch_active_config(db_path=sqlh.USAGE_TRACKING_DB_PATH) -> dict:
+def fetch_active_config(db_path=None) -> dict:
+    db_path = db_path or sqlh.USAGE_TRACKING_DB_PATH
     row = fetch_active_config_row(db_path)
     if not row:
         # fallback to name="default" if present
@@ -1036,7 +1074,8 @@ def fetch_active_config(db_path=sqlh.USAGE_TRACKING_DB_PATH) -> dict:
     return cfg
 
 
-def fetch_system_state_row(db_path=sqlh.USAGE_TRACKING_DB_PATH):
+def fetch_system_state_row(db_path=None):
+    db_path = db_path or sqlh.USAGE_TRACKING_DB_PATH
 
     config = fetch_active_config()
 
@@ -1056,7 +1095,8 @@ def fetch_system_state_row(db_path=sqlh.USAGE_TRACKING_DB_PATH):
     return row
 
 
-def fetch_system_state(db_path=sqlh.USAGE_TRACKING_DB_PATH) -> dict:
+def fetch_system_state(db_path=None) -> dict:
+    db_path = db_path or sqlh.USAGE_TRACKING_DB_PATH
     row = fetch_system_state_row(db_path)
 
     # row layout depends on select_config_row vs fetch_active_config_row:
@@ -1077,7 +1117,8 @@ def fetch_system_state(db_path=sqlh.USAGE_TRACKING_DB_PATH) -> dict:
     return cfg
 
 
-def fetch_user_mac_address_usage(username, db_path=sqlh.USAGE_TRACKING_DB_PATH):
+def fetch_user_mac_address_usage(username, db_path=None):
+    db_path = db_path or sqlh.USAGE_TRACKING_DB_PATH
 
     # Raise error if user doesn't exist
     user_exists = check_if_user_exists(username)
@@ -1106,7 +1147,8 @@ def fetch_user_mac_address_usage(username, db_path=sqlh.USAGE_TRACKING_DB_PATH):
     return res[0]
 
 
-def fetch_user_ip_address_usage(username, db_path=sqlh.USAGE_TRACKING_DB_PATH):
+def fetch_user_ip_address_usage(username, db_path=None):
+    db_path = db_path or sqlh.USAGE_TRACKING_DB_PATH
 
     # Raise error if user doesn't exist
     user_exists = check_if_user_exists(username)
@@ -1135,9 +1177,8 @@ def fetch_user_ip_address_usage(username, db_path=sqlh.USAGE_TRACKING_DB_PATH):
     return res[0]
 
 
-def get_usernames_from_mac_address_usage(
-    mac_address, db_path=sqlh.USAGE_TRACKING_DB_PATH
-):
+def get_usernames_from_mac_address_usage(mac_address, db_path=None):
+    db_path = db_path or sqlh.USAGE_TRACKING_DB_PATH
     con = sqlite3.connect(db_path, timeout=30, isolation_level=None)
     cur = con.cursor()
 
@@ -1156,9 +1197,8 @@ def get_usernames_from_mac_address_usage(
     return [entry[0] for entry in res]
 
 
-def get_usernames_from_ip_address_usage(
-    ip_address, db_path=sqlh.USAGE_TRACKING_DB_PATH
-):
+def get_usernames_from_ip_address_usage(ip_address, db_path=None):
+    db_path = db_path or sqlh.USAGE_TRACKING_DB_PATH
     con = sqlite3.connect(db_path, timeout=30, isolation_level=None)
     cur = con.cursor()
 
@@ -1176,9 +1216,8 @@ def get_usernames_from_ip_address_usage(
     return [entry[0] for entry in res]
 
 
-def get_usernames_from_ip_and_mac_usage(
-    ip_addr, mac_addr, db_path=sqlh.USAGE_TRACKING_DB_PATH
-):
+def get_usernames_from_ip_and_mac_usage(ip_addr, mac_addr, db_path=None):
+    db_path = db_path or sqlh.USAGE_TRACKING_DB_PATH
     con = sqlite3.connect(db_path, timeout=30, isolation_level=None)
     cur = con.cursor()
 
@@ -1203,7 +1242,8 @@ def get_usernames_from_ip_and_mac_usage(
     return [entry[0] for entry in res]
 
 
-def fetch_all_usernames_usage(db_path=sqlh.USAGE_TRACKING_DB_PATH):
+def fetch_all_usernames_usage(db_path=None):
+    db_path = db_path or sqlh.USAGE_TRACKING_DB_PATH
     con = sqlite3.connect(db_path, timeout=30, isolation_level=None)
     cur = con.cursor()
     cur.execute(
@@ -1215,7 +1255,8 @@ def fetch_all_usernames_usage(db_path=sqlh.USAGE_TRACKING_DB_PATH):
     return [entry[0] for entry in cur.fetchall()]
 
 
-def fetch_group_quota_info_usage(db_path=sqlh.USAGE_TRACKING_DB_PATH):
+def fetch_group_quota_info_usage(db_path=None):
+    db_path = db_path or sqlh.USAGE_TRACKING_DB_PATH
     con = sqlite3.connect(db_path, timeout=30, isolation_level=None)
     cur = con.cursor()
     cur.execute(
@@ -1243,7 +1284,8 @@ def fetch_group_quota_info_usage(db_path=sqlh.USAGE_TRACKING_DB_PATH):
     return cur.fetchall()
 
 
-def fetch_all_users_with_groups_usage(db_path=sqlh.USAGE_TRACKING_DB_PATH):
+def fetch_all_users_with_groups_usage(db_path=None):
+    db_path = db_path or sqlh.USAGE_TRACKING_DB_PATH
     con = sqlite3.connect(db_path, timeout=30, isolation_level=None)
     cur = con.cursor()
     cur.execute(
@@ -1260,7 +1302,8 @@ def fetch_all_users_with_groups_usage(db_path=sqlh.USAGE_TRACKING_DB_PATH):
     return rows
 
 
-def fetch_desired_quota_ratios(db_path=sqlh.USAGE_TRACKING_DB_PATH):
+def fetch_desired_quota_ratios(db_path=None):
+    db_path = db_path or sqlh.USAGE_TRACKING_DB_PATH
     con = sqlite3.connect(db_path, timeout=30, isolation_level=None)
     cur = con.cursor()
     cur.execute(
@@ -1273,9 +1316,8 @@ def fetch_desired_quota_ratios(db_path=sqlh.USAGE_TRACKING_DB_PATH):
     return res
 
 
-def fetch_config_total_bytes(
-    config_name="default", db_path=sqlh.USAGE_TRACKING_DB_PATH
-):
+def fetch_config_total_bytes(config_name="default", db_path=None):
+    db_path = db_path or sqlh.USAGE_TRACKING_DB_PATH
     con = sqlite3.connect(db_path, timeout=30, isolation_level=None)
     cur = con.cursor()
     cur.execute(
@@ -1286,32 +1328,30 @@ def fetch_config_total_bytes(
         """,
         (config_name,),
     )
+
     res = cur.fetchone()
+
+    con.close()
+
     return res[0]
 
 
-def fetch_max_daily_usage(db_path=sqlh.USAGE_TRACKING_DB_PATH):
+def fetch_max_daily_usage(db_path=None):
     """
-    Should iterate across each user in the system, summing (user_quota - daily_usage). If user has a temporary quota, sum that instead.
+    Should iterate across each user in the system, summing (user_quota - daily_usage).
     """
+    db_path = db_path or sqlh.USAGE_TRACKING_DB_PATH
     con = sqlite3.connect(db_path, timeout=30, isolation_level=None)
     cur = con.cursor()
 
-    if sqlh.check_if_table_empty("users", sqlh.USAGE_TRACKING_DB_PATH):
+    if sqlh.check_if_table_empty("users", db_path):
         return 0
 
     cur.execute("PRAGMA foreign_keys = ON;")
 
     cur.execute(
         """
-        SELECT COALESCE(SUM(
-            CASE
-                WHEN u.has_temporary_quota = 1
-                    THEN COALESCE(u.temporary_quota_bytes, 0) - COALESCE(u.daily_usage_bytes, 0)
-                ELSE
-                    COALESCE(g.high_speed_quota, 0) - COALESCE(u.daily_usage_bytes, 0)
-            END
-        ), 0)
+        SELECT COALESCE(SUM(MAX(COALESCE(g.high_speed_quota, 0) - COALESCE(u.daily_usage_bytes, 0), 0)), 0)
         FROM users u
         JOIN group_users gu ON u.id = gu.user_id
         JOIN groups g ON g.id = gu.group_id
@@ -1319,10 +1359,14 @@ def fetch_max_daily_usage(db_path=sqlh.USAGE_TRACKING_DB_PATH):
     )
 
     res = cur.fetchone()
+
+    con.close()
+
     return res[0]
 
 
-def fetch_all_monthly_usage_bytes(db_path=sqlh.USAGE_TRACKING_DB_PATH):
+def fetch_all_monthly_usage_bytes(db_path=None):
+    db_path = db_path or sqlh.USAGE_TRACKING_DB_PATH
 
     if sqlh.check_if_table_empty("users", sqlh.USAGE_TRACKING_DB_PATH):
         return 0
@@ -1338,7 +1382,8 @@ def fetch_all_monthly_usage_bytes(db_path=sqlh.USAGE_TRACKING_DB_PATH):
     return [entry[0] for entry in cur.fetchall()]
 
 
-def fetch_all_ip_addr_ip_timeouts(db_path=sqlh.USAGE_TRACKING_DB_PATH):
+def fetch_all_ip_addr_ip_timeouts(db_path=None):
+    db_path = db_path or sqlh.USAGE_TRACKING_DB_PATH
     con = sqlite3.connect(db_path, timeout=30, isolation_level=None)
     cur = con.cursor()
     cur.execute(
@@ -1350,7 +1395,8 @@ def fetch_all_ip_addr_ip_timeouts(db_path=sqlh.USAGE_TRACKING_DB_PATH):
     return cur.fetchall()
 
 
-def fetch_session_total_bytes(username, db_path=sqlh.USAGE_TRACKING_DB_PATH):
+def fetch_session_total_bytes(username, db_path=None):
+    db_path = db_path or sqlh.USAGE_TRACKING_DB_PATH
     # Raise error if user doesn't exist
     user_exists = check_if_user_exists(username)
 
@@ -1394,7 +1440,8 @@ def fetch_session_total_bytes(username, db_path=sqlh.USAGE_TRACKING_DB_PATH):
         con.close()
 
 
-def update_user_bytes_usage(byte_delta, username, db_path=sqlh.USAGE_TRACKING_DB_PATH):
+def update_user_bytes_usage(byte_delta, username, db_path=None):
+    db_path = db_path or sqlh.USAGE_TRACKING_DB_PATH
     # Raise error if user doens't exist
     user_exists = check_if_user_exists(username)
 
@@ -1439,9 +1486,8 @@ def update_user_bytes_usage(byte_delta, username, db_path=sqlh.USAGE_TRACKING_DB
     sqlh.log_all_table_information(USAGE_TRACKING_TABLE_NAME)
 
 
-def update_session_start_bytes(
-    username, user_bytes, db_path=sqlh.USAGE_TRACKING_DB_PATH
-):
+def update_session_start_bytes(username, user_bytes, db_path=None):
+    db_path = db_path or sqlh.USAGE_TRACKING_DB_PATH
     # Raise error if user doens't exist
     user_exists = check_if_user_exists(username)
 
@@ -1474,8 +1520,11 @@ def update_session_start_bytes(
     con.close()
 
 
-def wipe_session_total_bytes(username, db_path=sqlh.USAGE_TRACKING_DB_PATH):
+def wipe_session_total_bytes(username, db_path=None):
+
     log.debug(f"Wiping session total bytes for {username}...")
+
+    db_path = db_path or sqlh.USAGE_TRACKING_DB_PATH
 
     # Raise error if user doens't exist
     user_exists = check_if_user_exists(username)
@@ -1509,21 +1558,8 @@ def wipe_session_total_bytes(username, db_path=sqlh.USAGE_TRACKING_DB_PATH):
     con.close()
 
 
-def wipe_temporary_quotas(db_path=sqlh.USAGE_TRACKING_DB_PATH):
-    log.debug(f"Wiping all temporary_quota_bytes...")
-
-    with sqlite3.connect(db_path, timeout=30) as con:
-        con.execute(
-            """
-            UPDATE users
-            SET has_temporary_quota = 0,
-                temporary_quota_bytes = 0
-            WHERE has_temporary_quota = 1 OR temporary_quota_bytes != 0
-            """
-        )
-
-
-def usage_daily_wipe(db_path=sqlh.USAGE_TRACKING_DB_PATH):
+def usage_daily_wipe(db_path=None):
+    db_path = db_path or sqlh.USAGE_TRACKING_DB_PATH
     con = sqlite3.connect(
         db_path, timeout=30, isolation_level=None
     )  # Connects to database
@@ -1539,7 +1575,8 @@ def usage_daily_wipe(db_path=sqlh.USAGE_TRACKING_DB_PATH):
     con.close()
 
 
-def usage_monthly_wipe(db_path=sqlh.USAGE_TRACKING_DB_PATH):
+def usage_monthly_wipe(db_path=None):
+    db_path = db_path or sqlh.USAGE_TRACKING_DB_PATH
     con = sqlite3.connect(
         db_path, timeout=30, isolation_level=None
     )  # Connects to database
@@ -1555,7 +1592,8 @@ def usage_monthly_wipe(db_path=sqlh.USAGE_TRACKING_DB_PATH):
     con.close()
 
 
-def fetch_daily_bytes_usage(username, db_path=sqlh.USAGE_TRACKING_DB_PATH):
+def fetch_daily_bytes_usage(username, db_path=None):
+    db_path = db_path or sqlh.USAGE_TRACKING_DB_PATH
     # Raise error if user doesn't exist
     user_exists = check_if_user_exists(username)
 
@@ -1591,9 +1629,45 @@ def fetch_daily_bytes_usage(username, db_path=sqlh.USAGE_TRACKING_DB_PATH):
         con.close()
 
 
-def fetch_high_speed_quota_for_user_usage(
-    username, db_path=sqlh.USAGE_TRACKING_DB_PATH
-):
+def fetch_monthly_bytes_usage(username, db_path=None):
+    db_path = db_path or sqlh.USAGE_TRACKING_DB_PATH
+    # Raise error if user doesn't exist
+    user_exists = check_if_user_exists(username)
+
+    if not user_exists:
+        log.error(
+            f"Failed fetching quota_bytes for user {username}: not found in users table."
+        )
+        raise UserNameError(f"User {username} does not exist.")
+
+    con = sqlite3.connect(
+        db_path, timeout=30, isolation_level=None
+    )  # Connects to database
+    # Need to add try blocks and error catching for all of these things at some point.
+    try:
+        cur = con.cursor()
+
+        cur.execute(
+            """
+            SELECT monthly_usage_bytes
+            FROM users
+            WHERE username = ?
+            """,
+            (username,),
+        )
+        row = cur.fetchone()
+        if row is None:
+            log.error(
+                f"ERROR: Operation to fetch monthly usage failed for user {username}."
+            )
+            return None
+        return row[0]
+    finally:
+        con.close()
+
+
+def fetch_high_speed_quota_for_user_usage(username, db_path=None):
+    db_path = db_path or sqlh.USAGE_TRACKING_DB_PATH
     # Raise error if user doesn't exist, isn't in group, or if group doesn't exist
     user_exists = check_if_user_exists(username)
 
@@ -1651,7 +1725,8 @@ def fetch_high_speed_quota_for_user_usage(
     return quota_bytes[0]
 
 
-def fetch_session_start_bytes(username, db_path=sqlh.USAGE_TRACKING_DB_PATH):
+def fetch_session_start_bytes(username, db_path=None):
+    db_path = db_path or sqlh.USAGE_TRACKING_DB_PATH
     # Raise error if user doesn't exist
     user_exists = check_if_user_exists(username)
 
@@ -1691,7 +1766,8 @@ def fetch_session_start_bytes(username, db_path=sqlh.USAGE_TRACKING_DB_PATH):
         con.close()
 
 
-def check_if_user_in_any_group(username, db_path=sqlh.USAGE_TRACKING_DB_PATH):
+def check_if_user_in_any_group(username, db_path=None):
+    db_path = db_path or sqlh.USAGE_TRACKING_DB_PATH
     con = sqlite3.connect(
         db_path, timeout=30, isolation_level=None
     )  # Connects to database
@@ -1712,7 +1788,8 @@ def check_if_user_in_any_group(username, db_path=sqlh.USAGE_TRACKING_DB_PATH):
     return True
 
 
-def check_which_group_user_is_in(username, db_path=sqlh.USAGE_TRACKING_DB_PATH):
+def check_which_group_user_is_in(username, db_path=None):
+    db_path = db_path or sqlh.USAGE_TRACKING_DB_PATH
     con = sqlite3.connect(
         db_path, timeout=30, isolation_level=None
     )  # Connects to database
@@ -1734,9 +1811,8 @@ def check_which_group_user_is_in(username, db_path=sqlh.USAGE_TRACKING_DB_PATH):
     return res[0]
 
 
-def check_if_user_exists(
-    username, table_name=USAGE_TRACKING_TABLE_NAME, db_path=sqlh.USAGE_TRACKING_DB_PATH
-):
+def check_if_user_exists(username, table_name=USAGE_TRACKING_TABLE_NAME, db_path=None):
+    db_path = db_path or sqlh.USAGE_TRACKING_DB_PATH
     con = sqlite3.connect(
         db_path, timeout=30, isolation_level=None
     )  # Connects to database
@@ -1777,7 +1853,8 @@ def check_if_value_in_table(value, value_type, table_name, db_path):
     return True
 
 
-def check_if_group_exists(group_name, db_path=sqlh.USAGE_TRACKING_DB_PATH):
+def check_if_group_exists(group_name, db_path=None):
+    db_path = db_path or sqlh.USAGE_TRACKING_DB_PATH
     con = sqlite3.connect(
         db_path, timeout=30, isolation_level=None
     )  # Connects to database
@@ -1797,7 +1874,8 @@ def check_if_group_exists(group_name, db_path=sqlh.USAGE_TRACKING_DB_PATH):
     return True
 
 
-def check_if_user_logged_in(username, db_path=sqlh.USAGE_TRACKING_DB_PATH):
+def check_if_user_logged_in(username, db_path=None):
+    db_path = db_path or sqlh.USAGE_TRACKING_DB_PATH
     con = sqlite3.connect(
         db_path, timeout=30, isolation_level=None
     )  # Connects to database
@@ -1819,7 +1897,8 @@ def check_if_user_logged_in(username, db_path=sqlh.USAGE_TRACKING_DB_PATH):
     return bool(logged_in)
 
 
-def check_if_user_exceeds_quota(username, db_path=sqlh.USAGE_TRACKING_DB_PATH):
+def check_if_user_exceeds_quota(username, db_path=None):
+    db_path = db_path or sqlh.USAGE_TRACKING_DB_PATH
     con = sqlite3.connect(
         db_path, timeout=30, isolation_level=None
     )  # Connects to database
@@ -1841,7 +1920,8 @@ def check_if_user_exceeds_quota(username, db_path=sqlh.USAGE_TRACKING_DB_PATH):
     return bool(exceeds_quota)
 
 
-def insert_ip_addr_ip_db(user_ip, user_mac, now, db_path=sqlh.USAGE_TRACKING_DB_PATH):
+def insert_ip_addr_ip_db(user_ip, user_mac, now, db_path=None):
+    db_path = db_path or sqlh.USAGE_TRACKING_DB_PATH
     con = sqlite3.connect(
         db_path, timeout=30, isolation_level=None
     )  # Connects to database
@@ -1863,7 +1943,8 @@ def insert_ip_addr_ip_db(user_ip, user_mac, now, db_path=sqlh.USAGE_TRACKING_DB_
     log.info(f"Inserted user at {user_ip} into ip_timeouts table.")
 
 
-def select_ip_row(ip_addr, db_path=sqlh.USAGE_TRACKING_DB_PATH):
+def select_ip_row(ip_addr, db_path=None):
+    db_path = db_path or sqlh.USAGE_TRACKING_DB_PATH
     con = sqlite3.connect(
         db_path, timeout=30, isolation_level=None
     )  # Connects to database
@@ -1881,7 +1962,8 @@ def select_ip_row(ip_addr, db_path=sqlh.USAGE_TRACKING_DB_PATH):
     return row
 
 
-def update_ip_db(ip_addr, now, timeout, db_path=sqlh.USAGE_TRACKING_DB_PATH):
+def update_ip_db(ip_addr, now, timeout, db_path=None):
+    db_path = db_path or sqlh.USAGE_TRACKING_DB_PATH
     row = select_ip_row(ip_addr)
 
     if row:
@@ -1912,7 +1994,8 @@ def update_ip_db(ip_addr, now, timeout, db_path=sqlh.USAGE_TRACKING_DB_PATH):
         )
 
 
-def delete_ip_neigh(ip_addr, db_path=sqlh.USAGE_TRACKING_DB_PATH):
+def delete_ip_neigh(ip_addr, db_path=None):
+    db_path = db_path or sqlh.USAGE_TRACKING_DB_PATH
     con = sqlite3.connect(
         db_path, timeout=30, isolation_level=None
     )  # Connects to database
@@ -1923,9 +2006,8 @@ def delete_ip_neigh(ip_addr, db_path=sqlh.USAGE_TRACKING_DB_PATH):
     log.debug(f"Deleted {ip_addr} from ip_timeouts table.")
 
 
-def update_user_quota_information(
-    username, exceeds_quota, db_path=sqlh.USAGE_TRACKING_DB_PATH
-):
+def update_user_quota_information(username, exceeds_quota, db_path=None):
+    db_path = db_path or sqlh.USAGE_TRACKING_DB_PATH
     if check_if_user_exists(username):
 
         quota_bool = OVER_QUOTA if exceeds_quota else NOT_OVER_QUOTA

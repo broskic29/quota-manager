@@ -43,6 +43,8 @@ def login():
         USER_LOGIN_ERROR_MESSAGES = {
             sqlh.IPAddressError: f"Login failed. IP address for user {username} could not be determined. Please disconnect from network and try again.",
             sqlm.UserNameError: f"Failed attempting to log in user {username}: User does not exist.",
+            qm.RestrictedDayError: "Login not allowed today (restricted day).",
+            qm.RestrictedUserError: "This device is not allowed on this network.",
             flu.UndefinedException: "Internal error logging in user. Please reload page.",
         }
 
