@@ -171,3 +171,12 @@ def byte_conversion(usage_bytes):
     byte_unit = "MB" if multiplier < 3 else "GB"
 
     return usage_bytes / byte_unit_multipliers[byte_unit], byte_unit
+
+
+def bytes_to_unit(value_bytes: float, unit: str) -> float:
+    mult = byte_unit_multipliers[unit]
+    return 0.0 if not value_bytes else float(value_bytes) / float(mult)
+
+
+def pick_unit(total_bytes: float) -> str:
+    return "GB" if float(total_bytes) >= float(byte_unit_multipliers["GB"]) else "MB"

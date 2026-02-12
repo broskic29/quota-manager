@@ -15,6 +15,10 @@ class QuotaConfigError(ValueError):
     pass
 
 
+class InsufficientBytesError(ValueError):
+    pass
+
+
 def floor_to_step(x: int, step: int) -> int:
     if step <= 0:
         raise ValueError("step must be > 0")
@@ -103,7 +107,7 @@ def validate_quota_config(cfg: dict) -> None:
         )
 
     if daily < min_cost - tol:
-        raise QuotaConfigError(
+        raise InsufficientBytesError(
             f"daily_bytes ({daily}) below min feasible total ({min_cost})."
         )
 
@@ -138,7 +142,15 @@ def quota_vector_generator(
     """
 
     # Validate config first.
-    validate_quota_config(quota_config_dict)
+    try:
+        validate_quota_config(quota_config_dict)
+    except QuotaConfigError as e:
+        log.error(f"quota_vector_generator: Unable to allocate quotas, error: {e}")
+    except InsufficientBytesError:
+        log.info(
+            f"quota_vector_generator: Insufficient bytes to allocate quotas. Setting all user quotas to 0."
+        )
+        return {"v_dict": {name: 0 for name in quota_config_dict["groups"]}}
 
     groups = [group for group in quota_config_dict["groups"]]
     weights = [group["n"] for group in quota_config_dict["groups"].values()]

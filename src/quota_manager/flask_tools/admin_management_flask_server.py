@@ -1,4 +1,12 @@
-from flask import Flask, request, render_template_string, redirect, url_for
+from flask import (
+    Flask,
+    request,
+    render_template_string,
+    redirect,
+    Response,
+    url_for,
+    session,
+)
 from sqlite3 import IntegrityError
 import logging
 
@@ -14,6 +22,7 @@ import datetime as dt
 
 
 admin_management_app = Flask(__name__)
+admin_management_app.secret_key = "donbosco1815"
 
 log = logging.getLogger(__name__)
 
@@ -146,12 +155,6 @@ def create_group():
         ahtml.new_group_form,
         error=error,
     )
-
-
-@admin_management_app.route("/admin/usage")
-@flu.require_admin_auth
-def usage_overview():
-    return "<h2>Usage overview coming soon</h2>"
 
 
 @admin_management_app.route("/")
@@ -361,6 +364,12 @@ def admin_config():
             allowed_macs=allowed_macs,
             active_config=1,
         )
+
+        if int(total_gb * 1024**3) != cfg["total_monthly_bytes_purchased"]:
+            tz = dt.timezone(dt.timedelta(hours=sqlh.UTC_OFFSET))
+            now = dt.datetime.now(tz)
+            qm.update_group_quotas(now, qm.ACCOUNT_BILLING_DAY)
+
         return render_template_string(
             ahtml.success_page, message=f"Successfully updated config."
         )
@@ -373,3 +382,65 @@ def admin_config():
         mac_set_limitation=cfg["mac_set_limitation"],
         allowed_macs=cfg["allowed_macs"],
     )
+
+
+@admin_management_app.route("/admin/usage", methods=["GET"])
+@flu.require_admin_auth
+def admin_usage():
+    msg = session.pop("message", "")
+    error = session.pop("error", "")
+
+    tz = dt.timezone(dt.timedelta(hours=sqlh.UTC_OFFSET))
+    now = dt.datetime.now(tz)
+
+    billing_day = qm.ACCOUNT_BILLING_DAY
+    reset_dt = qm.calculate_next_monthly_reset(now, billing_day)
+
+    monthly_budget_bytes = float(sqlm.fetch_config_total_bytes() or 0)
+    monthly_used_bytes = float(sqlm.fetch_monthly_usage_bytes() or 0)
+    monthly_remaining_bytes = max(monthly_budget_bytes - monthly_used_bytes, 0.0)
+
+    active_days_left = qm.compute_remaining_weekdays(now, reset_dt.day)
+    daily_budget_bytes = (
+        monthly_remaining_bytes / active_days_left if active_days_left > 0 else 0.0
+    )
+    daily_used_bytes = float(sqlm.fetch_daily_usage_bytes() or 0)
+
+    daily_unit = flu.pick_unit(daily_budget_bytes)
+    monthly_unit = flu.pick_unit(monthly_budget_bytes)
+
+    users = sqlm.fetch_users_usage_rows()
+
+    return render_template_string(
+        ahtml.admin_usage_template,
+        message=msg,
+        error=error,
+        users=users,
+        billing_day=billing_day,
+        reset_dt=reset_dt.strftime("%Y-%m-%d 00:00"),
+        daily_unit=daily_unit,
+        daily_used=flu.bytes_to_unit(daily_used_bytes, daily_unit),
+        daily_budget=flu.bytes_to_unit(daily_budget_bytes, daily_unit),
+        monthly_unit=monthly_unit,
+        monthly_used=flu.bytes_to_unit(monthly_used_bytes, monthly_unit),
+        monthly_budget=flu.bytes_to_unit(monthly_budget_bytes, monthly_unit),
+        monthly_remaining=flu.bytes_to_unit(monthly_remaining_bytes, monthly_unit),
+    )
+
+
+@admin_management_app.route("/admin/usage/<username>/drop", methods=["POST"])
+@flu.require_admin_auth
+def admin_drop_connectivity(username):
+    error = None
+    msgs = {
+        flu.UndefinedException: f"Internal error dropping connectivity for user {username}.",
+    }
+
+    ok, error = flu.safe_call(qm.drop_single_user, error, msgs, username)
+
+    if error or not ok:
+        session["error"] = error or f"Failed to drop connectivity for user {username}."
+    else:
+        session["message"] = f"Dropped connectivity for user {username}."
+
+    return redirect(url_for("admin_usage"), 302)

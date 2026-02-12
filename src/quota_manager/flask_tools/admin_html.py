@@ -1105,3 +1105,266 @@ config_page = """
 </body>
 </html>
 """
+
+
+admin_usage_template = """
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Total Usage</title>
+  <style>
+    body {
+      font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+      margin: 0;
+      padding: 0;
+      background: #f4f6f8;
+      min-height: 100vh;
+    }
+
+    .wrap {
+      width: min(1100px, 94vw);
+      margin: 24px auto 48px;
+    }
+
+    .card {
+      background: white;
+      border-radius: 12px;
+      box-shadow: 0 4px 20px rgba(0,0,0,0.08);
+      padding: 18px 18px;
+    }
+
+    h1 {
+      margin: 0 0 14px;
+      color: #222;
+      font-size: 1.6rem;
+    }
+
+    .top {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 12px;
+      margin-bottom: 12px;
+    }
+
+    .stat {
+      padding: 14px;
+      border: 1px solid #e7e9ee;
+      border-radius: 10px;
+      background: #fbfcfe;
+    }
+
+    .stat .label {
+      font-size: 0.85rem;
+      color: #555;
+      margin-bottom: 6px;
+    }
+
+    .stat .value {
+      font-size: 1.2rem;
+      font-weight: 700;
+      color: #0b5ed7;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .subtle {
+      color: #666;
+      font-size: 0.9rem;
+      margin: 10px 0 0;
+    }
+
+    .message {
+      margin: 12px 0 0;
+      padding: 10px 12px;
+      border-radius: 10px;
+      background: #e7f1ff;
+      border: 1px solid #cfe2ff;
+      color: #084298;
+      font-size: 0.95rem;
+    }
+
+    .error {
+      margin: 12px 0 0;
+      padding: 10px 12px;
+      border-radius: 10px;
+      background: #f8d7da;
+      border: 1px solid #f5c2c7;
+      color: #842029;
+      font-size: 0.95rem;
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin-top: 14px;
+      overflow: hidden;
+      border-radius: 12px;
+    }
+
+    thead th {
+      text-align: left;
+      font-size: 0.9rem;
+      color: #444;
+      background: #f1f4f8;
+      padding: 10px;
+      border-bottom: 1px solid #e2e6ef;
+    }
+
+    tbody td {
+      padding: 10px;
+      border-bottom: 1px solid #eef1f6;
+      font-size: 0.95rem;
+      color: #222;
+      vertical-align: middle;
+    }
+
+    tbody tr:hover {
+      background: #fbfcff;
+    }
+
+    .pill {
+      display: inline-block;
+      padding: 4px 10px;
+      border-radius: 999px;
+      font-size: 0.82rem;
+      border: 1px solid #dbe2f0;
+      background: #f6f8fc;
+      color: #334155;
+    }
+
+    .pill.on {
+      border-color: #cfe2ff;
+      background: #e7f1ff;
+      color: #084298;
+    }
+
+    .pill.off {
+      border-color: #f5c2c7;
+      background: #f8d7da;
+      color: #842029;
+    }
+
+    .actions {
+      display: flex;
+      gap: 8px;
+      align-items: center;
+    }
+
+    button {
+      padding: 8px 10px;
+      border-radius: 8px;
+      border: none;
+      cursor: pointer;
+      font-weight: 700;
+      font-size: 0.9rem;
+      background: #dc3545;
+      color: white;
+    }
+
+    button:hover {
+      background: #b02a37;
+    }
+
+    .muted {
+      color: #666;
+      font-size: 0.85rem;
+    }
+
+    @media (max-width: 820px) {
+      .top { grid-template-columns: 1fr; }
+    }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="card">
+      <h1>Total Usage Tracking</h1>
+
+      <div class="top">
+        <div class="stat">
+          <div class="label">Today's usage (all users)</div>
+          <div class="value">{{ daily_used | round(2) }} / {{ daily_budget | round(2) }} {{ daily_unit }}</div>
+          <div class="muted">Daily reset: 24:00</div>
+        </div>
+
+        <div class="stat">
+          <div class="label">Monthly usage (all users)</div>
+          <div class="value">{{ monthly_used | round(2) }} / {{ monthly_budget | round(2) }} {{ monthly_unit }}</div>
+          <div class="muted">Remaining: {{ monthly_remaining | round(2) }} {{ monthly_unit }}</div>
+        </div>
+
+        <div class="stat">
+          <div class="label">Monthly reset</div>
+          <div class="value">{{ reset_dt }}</div>
+          <div class="muted">Billing day: {{ billing_day }}</div>
+        </div>
+      </div>
+
+      {% if message %}
+        <div class="message">{{ message }}</div>
+      {% endif %}
+      {% if error %}
+        <div class="error">{{ error }}</div>
+      {% endif %}
+
+      <p class="subtle">Users are sorted by <b>daily usage</b> (MiB).</p>
+
+      <table>
+        <thead>
+          <tr>
+            <th>User</th>
+            <th>Group</th>
+            <th>Daily used (MiB)</th>
+            <th>Monthly used (GiB)</th>
+            <th>Status</th>
+            <th>IP</th>
+            <th>MAC</th>
+            <th>Action</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for u in users %}
+            <tr>
+              <td><b>{{ u.username }}</b></td>
+              <td>{{ u.group_name or '-' }}</td>
+              <td>{{ u.daily_mib | round(2) }}</td>
+              <td>{{ u.monthly_gib | round(2) }}</td>
+              <td>
+                {% if u.logged_in %}
+                  <span class="pill on">online</span>
+                {% else %}
+                  <span class="pill off">offline</span>
+                {% endif %}
+              </td>
+              <td>{{ u.ip_address or '-' }}</td>
+              <td>{{ u.mac_address or '-' }}</td>
+              <td>
+                <div class="actions">
+                  {% if u.logged_in and u.ip_address %}
+                    <form method="post" action="/admin/usage/{{ u.username }}/drop">
+                      <button type="submit"
+                              onclick="return confirm('Drop connectivity for ' + {{ u.username|tojson }} + '?')">
+                        Drop
+                      </button>
+                    </form>
+                  {% else %}
+                    <span class="muted">—</span>
+                  {% endif %}
+                </div>
+              </td>
+            </tr>
+          {% endfor %}
+
+          {% if users|length == 0 %}
+            <tr><td colspan="8" class="muted">No users found.</td></tr>
+          {% endif %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+</body>
+</html>
+"""

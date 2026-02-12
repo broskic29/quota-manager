@@ -212,6 +212,7 @@ def init_usage_db():
             system_name TEXT PRIMARY KEY,
             system_date TEXT NOT NULL,
             wiped_this_month INTEGER NOT NULL,
+            total_daily_bytes INTEGER,
             total_monthly_bytes INTEGER,
             all_time_bytes INTEGER,
             num_users INTEGER,
@@ -811,6 +812,7 @@ def initialize_system_state_usage(
     system_name: str,
     system_date: str,
     wiped_this_month: bool,
+    total_daily_bytes: int | None = None,
     total_monthly_bytes: int | None = None,
     all_time_bytes: int | None = None,
     num_users: int | None = None,
@@ -825,13 +827,14 @@ def initialize_system_state_usage(
 
     cur.execute(
         f"""
-    INSERT INTO {SYSTEM_STATE_TABLE_NAME} (system_name, system_date, wiped_this_month, total_monthly_bytes, all_time_bytes, num_users, num_groups)
-    VALUES (?, ?, ?, ?, ?, ?, ?)
+    INSERT INTO {SYSTEM_STATE_TABLE_NAME} (system_name, system_date, wiped_this_month, total_daily_bytes, total_monthly_bytes, all_time_bytes, num_users, num_groups)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
     """,
         (
             system_name,
             system_date,
             wiped_this_month,
+            total_daily_bytes,
             total_monthly_bytes,
             all_time_bytes,
             num_users,
@@ -847,6 +850,7 @@ def update_system_state_usage(
     system_name: str | None = None,
     system_date: str | None = None,
     wiped_this_month: bool | None = None,
+    total_daily_bytes: int | None = None,
     total_monthly_bytes: int | None = None,
     all_time_bytes: int | None = None,
     num_users: int | None = None,
@@ -866,12 +870,13 @@ def update_system_state_usage(
         values[0] = system_name if system_name is not None else values[0]
         values[1] = system_date if system_date is not None else values[1]
         values[2] = wiped_this_month if wiped_this_month is not None else values[2]
-        values[3] = (
-            total_monthly_bytes if total_monthly_bytes is not None else values[3]
+        values[3] = total_daily_bytes if total_daily_bytes is not None else values[3]
+        values[4] = (
+            total_monthly_bytes if total_monthly_bytes is not None else values[4]
         )
-        values[4] = all_time_bytes if all_time_bytes is not None else values[4]
-        values[5] = num_users if num_users is not None else values[5]
-        values[6] = num_groups if num_groups is not None else values[6]
+        values[5] = all_time_bytes if all_time_bytes is not None else values[5]
+        values[6] = num_users if num_users is not None else values[6]
+        values[7] = num_groups if num_groups is not None else values[7]
 
         con = sqlite3.connect(
             db_path, timeout=30, isolation_level=None
@@ -918,6 +923,7 @@ def select_config_row(name, db_path=sqlh.USAGE_TRACKING_DB_PATH):
 
 def update_config_usage(
     name: str | None = None,
+    system_name: str | None = None,
     total_bytes: int | None = None,
     throttling_enabled: bool | None = None,
     active_days: list[int] | None = None,
@@ -940,12 +946,13 @@ def update_config_usage(
         values = list(row)
         log.debug(f"Values for config {name}: {values}")
         values[1] = name if name is not None else values[1]
-        values[2] = total_bytes if total_bytes is not None else values[2]
-        values[3] = throttling_enabled if throttling_enabled is not None else values[3]
-        values[4] = active_days if active_days is not None else values[4]
-        values[5] = mac_set_limitation if mac_set_limitation is not None else values[5]
-        values[6] = allowed_macs if allowed_macs is not None else values[6]
-        values[7] = active_config if active_config is not None else values[7]
+        values[2] = system_name if system_name is not None else values[2]
+        values[3] = total_bytes if total_bytes is not None else values[3]
+        values[4] = throttling_enabled if throttling_enabled is not None else values[4]
+        values[5] = active_days if active_days is not None else values[5]
+        values[6] = mac_set_limitation if mac_set_limitation is not None else values[6]
+        values[7] = allowed_macs if allowed_macs is not None else values[7]
+        values[8] = active_config if active_config is not None else values[8]
 
         con = sqlite3.connect(
             db_path, timeout=30, isolation_level=None
@@ -1044,7 +1051,7 @@ def fetch_system_state_row(db_path=sqlh.USAGE_TRACKING_DB_PATH):
     cur = con.cursor()
     cur.execute(
         f"""
-        SELECT system_name, system_date, wiped_this_month, total_monthly_bytes, all_time_bytes, num_users, num_groups
+        SELECT system_name, system_date, wiped_this_month, total_daily_bytes, total_monthly_bytes, all_time_bytes, num_users, num_groups
         FROM {SYSTEM_STATE_TABLE_NAME}
         WHERE system_name = ?
         LIMIT 1
@@ -1068,10 +1075,11 @@ def fetch_system_state(db_path=sqlh.USAGE_TRACKING_DB_PATH) -> dict:
         "system_name": row[0],
         "system_date": row[1],
         "wiped_this_month": bool(row[2]),
-        "total_monthly_bytes": row[3],
-        "all_time_bytes": row[4],
-        "num_users": row[5],
-        "num_groups": row[6],
+        "total_daily_bytes": row[3],
+        "total_monthly_bytes": row[4],
+        "all_time_bytes": row[5],
+        "num_users": row[6],
+        "num_groups": row[7],
     }
 
     return cfg
@@ -1260,6 +1268,43 @@ def fetch_all_users_with_groups_usage(db_path=sqlh.USAGE_TRACKING_DB_PATH):
     return rows
 
 
+def fetch_users_usage_rows(db_path: str = sqlh.USAGE_TRACKING_DB_PATH) -> list[dict]:
+    """Return a list of user usage dicts sorted by daily usage desc."""
+    with sqlite3.connect(db_path, timeout=30) as con:
+        con.row_factory = sqlite3.Row
+        rows = con.execute(
+            """
+            SELECT
+                u.username,
+                u.daily_usage_bytes,
+                u.monthly_usage_bytes,
+                u.ip_address,
+                u.mac_address,
+                u.logged_in,
+                g.group_name
+            FROM users u
+            LEFT JOIN group_users gu ON gu.user_id = u.id
+            LEFT JOIN groups g ON g.id = gu.group_id
+            ORDER BY u.daily_usage_bytes DESC, u.username ASC
+            """
+        ).fetchall()
+
+    users: list[dict] = []
+    for r in rows:
+        users.append(
+            {
+                "username": r["username"],
+                "group_name": r["group_name"],
+                "daily_mib": (r["daily_usage_bytes"] or 0) / float(1024**2),
+                "monthly_gib": (r["monthly_usage_bytes"] or 0) / float(1024**3),
+                "ip_address": r["ip_address"],
+                "mac_address": r["mac_address"],
+                "logged_in": bool(r["logged_in"]),
+            }
+        )
+    return users
+
+
 def fetch_desired_quota_ratios(db_path=sqlh.USAGE_TRACKING_DB_PATH):
     con = sqlite3.connect(db_path, timeout=30, isolation_level=None)
     cur = con.cursor()
@@ -1285,6 +1330,38 @@ def fetch_config_total_bytes(
         WHERE name = ?
         """,
         (config_name,),
+    )
+    res = cur.fetchone()
+    return res[0]
+
+
+def fetch_daily_usage_bytes(db_path=sqlh.USAGE_TRACKING_DB_PATH):
+    config = fetch_active_config()
+    con = sqlite3.connect(db_path, timeout=30, isolation_level=None)
+    cur = con.cursor()
+    cur.execute(
+        f"""
+        SELECT total_daily_bytes
+        FROM {SYSTEM_STATE_TABLE_NAME}
+        WHERE system_name = ?
+        """,
+        (config["system_name"],),
+    )
+    res = cur.fetchone()
+    return res[0]
+
+
+def fetch_monthly_usage_bytes(db_path=sqlh.USAGE_TRACKING_DB_PATH):
+    config = fetch_active_config()
+    con = sqlite3.connect(db_path, timeout=30, isolation_level=None)
+    cur = con.cursor()
+    cur.execute(
+        f"""
+        SELECT total_monthly_bytes
+        FROM {SYSTEM_STATE_TABLE_NAME}
+        WHERE system_name = ?
+        """,
+        (config["system_name"],),
     )
     res = cur.fetchone()
     return res[0]
@@ -1430,6 +1507,23 @@ def update_user_bytes_usage(byte_delta, username, db_path=sqlh.USAGE_TRACKING_DB
         ),
     )
 
+    cur.execute(
+        """
+        UPDATE system_state
+        SET total_daily_bytes = total_daily_bytes + ?,
+            total_monthly_bytes = total_monthly_bytes + ?,
+            all_time_bytes = all_time_bytes + ?,
+        WHERE username = ?
+        """,
+        (
+            byte_delta,
+            byte_delta,
+            byte_delta,
+            byte_delta,
+            username,
+        ),
+    )
+
     # Should really add error checking here...
 
     con.commit()
@@ -1535,6 +1629,13 @@ def usage_daily_wipe(db_path=sqlh.USAGE_TRACKING_DB_PATH):
         SET daily_usage_bytes = 0
         """,
     )
+
+    cur.execute(
+        """
+        UPDATE system_state
+        SET total_daily_bytes = 0
+        """,
+    )
     con.commit()
     con.close()
 
@@ -1549,6 +1650,13 @@ def usage_monthly_wipe(db_path=sqlh.USAGE_TRACKING_DB_PATH):
         """
         UPDATE users
         SET monthly_usage_bytes = 0
+        """,
+    )
+
+    cur.execute(
+        """
+        UPDATE system_state
+        SET total_monthly_bytes = 0
         """,
     )
     con.commit()

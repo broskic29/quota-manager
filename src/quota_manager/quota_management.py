@@ -90,6 +90,10 @@ def fetch_user_bytes(username):
     except nftm.NFTSetMissingElementError:
         log.debug(f"High speed users set empty.")
         return None
+    except sqlh.IPAddressError as e:
+        log.debug(f"fetch_user_bytes: User {username} ip address not in set {e}.")
+        log_out_user(username)
+        return None
 
     log.debug(f"User bytes: {user_bytes}")
 
@@ -152,8 +156,10 @@ def calculate_hypothetical_group_quotas_for_today(
 ):
 
     total_monthly_bytes_purchased = sqlm.fetch_config_total_bytes()
-    total_bytes_used = calculate_total_usage_bytes()
-    total_bytes_available = total_monthly_bytes_purchased - total_bytes_used
+    total_monthly_bytes_used = sqlm.fetch_monthly_usage_bytes()
+    total_monthly_bytes_available = (
+        total_monthly_bytes_purchased - total_monthly_bytes_used
+    )
 
     tz = dt.timezone(dt.timedelta(hours=sqlh.UTC_OFFSET))
     now = dt.datetime.now(tz)
@@ -162,10 +168,10 @@ def calculate_hypothetical_group_quotas_for_today(
 
     log.debug(f"Total weekdays remaining in month: {total_weekdays_left}.")
 
-    total_usage_today = calculate_total_daily_usage()
+    total_usage_today = sqlm.fetch_daily_bytes_usage()
 
     total_daily_bytes = (
-        total_bytes_available / total_weekdays_left
+        total_monthly_bytes_available / total_weekdays_left
     ) - total_usage_today
 
     log.debug(f"Total bytes available for today: {total_daily_bytes}.")
@@ -192,17 +198,6 @@ def calculate_hypothetical_group_quotas_for_today(
     return group_quotas_dict
 
 
-def calculate_total_daily_usage():
-
-    usernames = sqlm.fetch_all_usernames_usage()
-
-    total_daily_usage = 0
-    for username in usernames:
-        total_daily_usage += sqlm.fetch_daily_bytes_usage(username)
-
-    return total_daily_usage
-
-
 def update_user_bytes(username, usage_dict={}, db_path=sqlh.USAGE_TRACKING_DB_PATH):
     if sqlm.check_if_user_logged_in(username):
         user_bytes = fetch_user_bytes(username)
@@ -211,7 +206,7 @@ def update_user_bytes(username, usage_dict={}, db_path=sqlh.USAGE_TRACKING_DB_PA
             sqlm.update_user_bytes_usage(byte_delta, username, db_path)
             usage_dict[username] = user_bytes
     else:
-        # log.debug(f"User {username} not logged in. Ignoring for usage check.")
+        log.debug(f"User {username} not logged in. Ignoring for usage check.")
         pass
 
     return usage_dict
@@ -223,7 +218,9 @@ def update_all_users_bytes(db_path=sqlh.USAGE_TRACKING_DB_PATH):
     usernames = sqlm.fetch_all_usernames_usage(db_path)
 
     for username in usernames:
-        if not sqlm.check_if_user_exceeds_quota(username):
+        if not sqlm.check_if_user_exceeds_quota(
+            username
+        ) and not nftm.check_if_user_dropped(username):
             usage_dict = update_user_bytes(username, usage_dict)
 
     return usage_dict
@@ -522,8 +519,12 @@ def update_group_quotas(now, reset_day):
     log.debug(f"Daily update of group quotas.")
 
     total_monthly_bytes_purchased = sqlm.fetch_config_total_bytes()
-    total_bytes_used = calculate_total_usage_bytes()
-    total_bytes_available = total_monthly_bytes_purchased - total_bytes_used
+    total_bytes_used = sqlm.fetch_monthly_usage_bytes()
+
+    if total_bytes_used is None:
+        return
+
+    total_bytes_available = max(total_monthly_bytes_purchased - total_bytes_used, 0)
 
     log.debug(f"Total bytes available for rest of month: {total_bytes_available}.")
 
@@ -543,8 +544,14 @@ def update_group_quotas(now, reset_day):
     quota_config_dict = sqt.gen_quota_config_dict(total_daily_bytes, group_config_dict)
     log.debug(f"Quota config dict: {quota_config_dict}")
 
-    group_quotas_dict = sqt.quota_vector_generator(quota_config_dict)["v_dict"]
-    log.info(f"New data quotas: {group_quotas_dict}")
+    try:
+        group_quotas_dict = sqt.quota_vector_generator(quota_config_dict)["v_dict"]
+        log.info(f"New data quotas: {group_quotas_dict}")
+    except sqt.QuotaConfigError as e:
+        log.error(
+            f"update_group_quotas: Failed to update group quotas. Quota configuration error: {e} for quota_config_dict: {quota_config_dict}"
+        )
+        return
 
     # Under what conditions will this occur?
     # What changes will affect recalculation?
@@ -556,22 +563,22 @@ def update_group_quotas(now, reset_day):
     #   Already handled during group creation / modification.
     # In summary, should never be raised.
     if group_quotas_dict is None:
-        raise QuotaAllottmentError(
+        log.error(
             "Impossible to calculate quota for user with current constraints. Please change desired quota ratio for group."
         )
+        return
 
     apply_new_quotas(group_quotas_dict)
     log.debug(f"New user quotas applied:")
     sqlh.log_all_table_information("groups")
 
 
-def calculate_total_usage_bytes():
-    # Need to fetch and sum all monthly usage bytes from all users
-    monthly_byte_total = sqlm.fetch_all_monthly_usage_bytes()
+def update_num_entities_system_state():
+    num_users = len(sqlm.fetch_all_usernames_usage())
+    num_groups = len(sqlm.get_groups_usage())
 
-    if monthly_byte_total:
-        return sum(monthly_byte_total)
-    return 0
+    sqlm.update_system_state_usage(num_users=num_users)
+    sqlm.update_system_state_usage(num_groups=num_groups)
 
 
 def compute_remaining_weekdays(now, reset_day):
@@ -586,12 +593,23 @@ def compute_remaining_weekdays(now, reset_day):
     config = sqlm.fetch_active_config()
 
     cur = now  # start today
-    count = 1
+    count = 0
     while cur < next_monthly:
         if cur.weekday() in config["active_days_list"]:  # 0=Mon ... 4=Fri
             count += 1
         cur += dt.timedelta(days=1)
-    return count
+    return max(count, 1)
+
+
+def calculate_next_monthly_reset(now, reset_day):
+    """Count weekdays (Mon–Fri) remaining *after* the given day in the same month."""
+
+    if now.day < reset_day:
+        next_monthly = next_monthly.replace(day=reset_day)
+    else:
+        next_monthly = now + dt.timedelta(days=(32 - now.day))
+        next_monthly = next_monthly.replace(day=reset_day)
+    return next_monthly
 
 
 def calculate_max_num_bytes(group_config_dict, total_daily_bytes: float, *, tol=1e-3):
@@ -1194,7 +1212,9 @@ def system_daily_wipe_check(now):
 
     system_state = sqlm.fetch_system_state()
 
-    if date_str != system_state["system_date"]:
+    system_date = system_state["system_date"]
+
+    if date_str != system_date:
         return False
     return True
 
@@ -1204,12 +1224,3 @@ def system_monthly_wipe_check():
     system_state = sqlm.fetch_system_state()
 
     return system_state["wiped_this_month"]
-
-
-def update_system_date(now):
-    date_str = now.date().isoformat()
-    sqlm.update_system_state_usage(system_date=date_str)
-
-
-def update_monthly_wipe():
-    sqlm.update_system_state_usage(wiped_this_month=True)

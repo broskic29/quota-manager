@@ -86,43 +86,36 @@ def monthly_events(now):
 
 def usage_updater(stop_event: threading.Event):
 
-    quota_dict = {}
-
     while not stop_event.is_set():
         if stop_event.wait(USAGE_UPDATE_INTERVAL):
             break
 
         try:
-            tz = dt.timezone(dt.timedelta(hours=UTC_OFFSET))
-            now = dt.datetime.now(tz)
+            usage_update_event()
 
-            log.debug("Checking to see if system was daily wiped...")
-            system_daily_wiped = qm.system_daily_wipe_check(now)
-            if not system_daily_wiped:
-                log.debug("System not daily wiped, wiping system...")
-                daily_events(now)
-                qm.update_system_date(now)
-
-            log.debug("Checking to see if system was monthly wiped...")
-            system_monthly_wiped = qm.system_monthly_wipe_check()
-            if not system_monthly_wiped:
-                log.debug("System not monthly wiped, wiping system...")
-                monthly_events(now)
-                qm.update_monthly_wipe()
-
-            log.debug("Updating user byte totals...")
-            usage_dict = qm.update_all_users_bytes()
-            log.debug(usage_dict)
-
-            log.debug("Updating quota information for all users...")
-            quota_dict = qm.update_quota_information_all_users(quota_dict)
-
-            log.debug("Enforcing quotas for all users...")
-            qm.enforce_quotas_all_users(throttling=False)
         except Exception:
             log.exception("usage_updater crashed during update loop.")
             stop_event.set()
             break
+
+
+def usage_update_event():
+
+    log.debug("Checking for missed system wipes...")
+    updating_system_wipes()
+
+    log.debug("Updating user byte totals...")
+    usage_dict = qm.update_all_users_bytes()
+    log.debug(usage_dict)
+
+    log.debug("Updating system state...")
+    system_state_update()
+
+    log.debug("Updating quota information for all users...")
+    quota_dict = qm.update_quota_information_all_users(quota_dict)
+
+    log.debug("Enforcing quotas for all users...")
+    qm.enforce_quotas_all_users(throttling=False)
 
 
 def start_usage_tracking(stop_event: threading.Event):
@@ -136,3 +129,29 @@ def start_usage_tracking(stop_event: threading.Event):
 
     log.info("Usage tracking threads started")
     return [t_wipe_scheduler, t_usage_updater]
+
+
+def updating_system_wipes():
+    tz = dt.timezone(dt.timedelta(hours=UTC_OFFSET))
+    now = dt.datetime.now(tz)
+
+    date_str = now.date().isoformat()
+
+    log.debug("Checking to see if system was daily wiped...")
+    system_daily_wiped = qm.system_daily_wipe_check(now)
+    if not system_daily_wiped:
+        log.debug("System not daily wiped, wiping system...")
+        daily_events(now)
+        sqlm.update_system_state_usage(system_date=date_str)
+
+    log.debug("Checking to see if system was monthly wiped...")
+    system_monthly_wiped = qm.system_monthly_wipe_check()
+    if not system_monthly_wiped:
+        log.debug("System not monthly wiped, wiping system...")
+        monthly_events(now)
+        sqlm.update_system_state_usage(wiped_this_month=True)
+
+
+def system_state_update():
+    log.debug("Updating num_users, num_groups...")
+    qm.update_num_entities_system_state()
