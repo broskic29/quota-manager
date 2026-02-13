@@ -224,8 +224,10 @@ def calculate_total_daily_usage():
     usernames = sqlm.fetch_all_usernames_usage()
 
     total_daily_usage = 0
-    for username in usernames:
-        total_daily_usage += sqlm.fetch_daily_bytes_usage(username)
+
+    if usernames:
+        for username in usernames:
+            total_daily_usage += sqlm.fetch_daily_bytes_usage(username)
 
     return total_daily_usage
 
@@ -245,18 +247,22 @@ def update_user_bytes(username, usage_dict={}, db_path=None):
     return usage_dict
 
 
-def update_all_users_bytes(db_path=None):
-    db_path = db_path or sqlh.USAGE_TRACKING_DB_PATH
+def update_all_users_bytes(old_usage_dict, db_path=sqlh.USAGE_TRACKING_DB_PATH):
+
     usage_dict = {}
     usernames = sqlm.fetch_all_usernames_usage(db_path)
 
-    for username in usernames:
-        if not sqlm.check_if_user_exceeds_quota(
-            username
-        ) and not nftm.check_if_user_dropped(username):
-            usage_dict = update_user_bytes(username, usage_dict)
+    if usernames:
+        log.debug("Updating user byte totals...")
+        for username in usernames:
+            if not sqlm.check_if_user_exceeds_quota(username):
+                usage_dict = update_user_bytes(username, usage_dict)
 
-    return usage_dict
+    if usage_dict:
+        log.debug(usage_dict)
+        return usage_dict
+
+    return old_usage_dict
 
 
 def throttle_single_user(username, user_ip=None):
@@ -348,19 +354,22 @@ def reset_throttling_and_packet_dropping_all_users(db_path=None):
 
     usernames = sqlm.fetch_all_usernames_usage(db_path)
 
-    for username in usernames:
+    if usernames:
+        for username in usernames:
 
-        try:
-            user_ip = sqlm.fetch_user_ip_address_usage(username)
-        except sqlm.UserNameError:
-            log.debug(
-                f"Failed to reset throttling and packet_dropping for user {username}. User does not exist."
-            )
-            user_ip = None
+            try:
+                user_ip = sqlm.fetch_user_ip_address_usage(username)
+            except sqlm.UserNameError:
+                log.debug(
+                    f"Failed to reset throttling and packet_dropping for user {username}. User does not exist."
+                )
+                user_ip = None
 
-        if user_ip:
-            nftm.unthrottle_ip(user_ip)
-            nftm.undrop_ip(user_ip)
+            if user_ip:
+                nftm.unthrottle_ip(user_ip)
+                nftm.undrop_ip(user_ip)
+
+        log.info("Throttling and packet dropping reset.")
 
 
 def remove_user_from_nftables(username=None, user_ip=None):
@@ -491,18 +500,20 @@ def update_quota_information_all_users(quota_dict, db_path=None):
 
     usernames = sqlm.fetch_all_usernames_usage(db_path)
 
-    for username in usernames:
+    if usernames:
+        log.debug("Updating quota information for all users...")
+        for username in usernames:
 
-        if username not in quota_dict:
-            quota_dict[username] = {"exceeds_quota": False, "quota_msg": ""}
+            if username not in quota_dict:
+                quota_dict[username] = {"exceeds_quota": False, "quota_msg": ""}
 
-        exceeds_quota, daily_usage_bytes, quota_bytes = (
-            update_quota_information_single_user(username, db_path)
-        )
+            exceeds_quota, daily_usage_bytes, quota_bytes = (
+                update_quota_information_single_user(username, db_path)
+            )
 
-        if exceeds_quota and daily_usage_bytes and quota_bytes:
-            quota_dict[username]["exceeds_quota"] = exceeds_quota
-            quota_dict[username]["quota_msg"] = f"{daily_usage_bytes}/{quota_bytes}"
+            if exceeds_quota and daily_usage_bytes and quota_bytes:
+                quota_dict[username]["exceeds_quota"] = exceeds_quota
+                quota_dict[username]["quota_msg"] = f"{daily_usage_bytes}/{quota_bytes}"
 
     return quota_dict
 
@@ -550,9 +561,11 @@ def enforce_quotas_all_users(throttling: bool, db_path=None):
     db_path = db_path or sqlh.USAGE_TRACKING_DB_PATH
     usernames = sqlm.fetch_all_usernames_usage(db_path)
 
-    for username in usernames:
+    if usernames:
+        log.debug("Enforcing quotas for all users...")
+        for username in usernames:
 
-        enforce_quota_single_user(username, throttling, db_path)
+            enforce_quota_single_user(username, throttling, db_path)
 
 
 # Used to recompute quotas for all groups based on data used and number of weekdays
@@ -568,6 +581,14 @@ def update_group_quotas(now, reset_day):
         return
 
     total_bytes_available = max(total_monthly_bytes_purchased - total_bytes_used, 0)
+
+    if total_monthly_bytes_purchased is None or total_bytes_used is None:
+        log.debug(
+            f"update_group_quotas: Failed to update group quotas, total_monthly_bytes_purchased and/or total_bytes_used are empty."
+        )
+        raise QuotaAllottmentError(
+            "update_group_quotas: Failed to update group quotas, total_monthly_bytes_purchased and/or total_bytes_used are empty. Please check configuration."
+        )
 
     log.debug(f"Total bytes available for rest of month: {total_bytes_available}.")
 
@@ -592,20 +613,9 @@ def update_group_quotas(now, reset_day):
         group_quotas_dict = sqt.quota_vector_generator(quota_config_dict)["v_dict"]
         log.info(f"New data quotas: {group_quotas_dict}")
     except sqt.QuotaConfigError as e:
-        log.error(
-            f"update_group_quotas: Failed to update group quotas. Quota configuration error: {e} for quota_config_dict: {quota_config_dict}"
-        )
-        return
+        log.debug(f"update_group_quotas: Failed to generate quotas dict: {e}")
+        raise sqt.QuotaConfigError(f"Failed to generate quotas dict: {e}")
 
-    # Under what conditions will this occur?
-    # What changes will affect recalculation?
-    # 1. New user added
-    #   Already handled during user creation.
-    # 2. Data used the previous day
-    #   Should never be more than the amount already predetermined to work.
-    # 3. New group added
-    #   Already handled during group creation / modification.
-    # In summary, should never be raised.
     if group_quotas_dict is None:
         log.error(
             "Impossible to calculate quota for user with current constraints. Please change desired quota ratio for group."
@@ -613,6 +623,9 @@ def update_group_quotas(now, reset_day):
         return
 
     apply_new_quotas(group_quotas_dict)
+
+    log.info(f"Updated daily quotas for all groups.")
+
     log.debug(f"New user quotas applied:")
     sqlh.log_all_table_information("groups")
 
@@ -661,7 +674,10 @@ def calculate_next_monthly_reset(now, reset_day):
 def calculate_max_num_bytes(group_config_dict, total_daily_bytes: float, *, tol=1e-3):
     active = {name: g for name, g in group_config_dict.items() if g.get("n", 0) > 0}
     if not active:
-        raise ValueError("No active groups (all n=0).")
+        log.debug(
+            "calculate_max_num_bytes: Failed to calculate max num bytes. No active groups (all n=0)."
+        )
+        return group_config_dict
 
     denom = fsum(g["n"] * g["desired_quota_ratio"] for g in active.values())
     if denom <= tol:
@@ -1042,8 +1058,10 @@ def log_out_user(username):
 def log_out_all_users():
     usernames = sqlm.fetch_all_usernames_usage()
 
-    for username in usernames:
-        log_out_user(username)
+    if usernames:
+        for username in usernames:
+            log_out_user(username)
+        log.info("All users logged out.")
 
 
 def delete_user_from_system(username):
@@ -1090,8 +1108,33 @@ def delete_group_from_system(group_name):
 def delete_all_users_from_system():
     usernames = sqlm.fetch_all_usernames_usage()
 
-    for username in usernames:
-        delete_user_from_system(username)
+    if usernames:
+        for username in usernames:
+            delete_user_from_system(username)
+
+
+def system_hard_reset():
+    log.info("System hard reset requested. System wipe in progress...")
+
+    log_out_all_users()
+
+    delete_all_users_from_system()
+
+    # Delete all tables
+    all_tables = {
+        sqlh.USAGE_TRACKING_DB_PATH: sqlm.IP_TIMEOUT_TABLE_NAME,
+        sqlh.USAGE_TRACKING_DB_PATH: sqlm.USAGE_TRACKING_TABLE_NAME,
+        sqlh.USAGE_TRACKING_DB_PATH: sqlm.GROUP_USERS_TABLE_NAME,
+        sqlh.USAGE_TRACKING_DB_PATH: sqlm.CONFIGS_TABLE_NAME,
+        sqlh.USAGE_TRACKING_DB_PATH: sqlm.SYSTEM_STATE_TABLE_NAME,
+        sqlh.RADIUS_DB_PATH: sqlm.RADIUS_TABLE_NAME,
+    }
+
+    for db_path, table_name in all_tables.items():
+        sqlh.wipe_table(table_name, db_path)
+
+    # Delete all elements from nft sets
+    nftm.flush_all_tracking_sets(nftm.TABLE_FAMILY, nftm.TABLE_NAME)
 
 
 def check_which_user_logged_in_for_mac_address(mac_address):
@@ -1137,6 +1180,13 @@ def check_quota_ratio_legality(desired_quota_ratio, group_name=None, tol=1e-3):
     quota_ratios = sqlm.fetch_desired_quota_ratios()  # [(group, ratio), ...]
     others_sum = fsum(r for g, r in quota_ratios if g != group_name)
     max_allowed = 1.0 - others_sum
+
+    if not quota_ratios:
+        # If there are currently no quota ratios, then of course it works.
+        # The page itself takes care of legal bounds for the value.
+        # This one just makes sure the sum of the ratios doesn't overflow
+        # one.
+        return True
 
     if desired_quota_ratio > max_allowed + tol:
         raise ValueError(
@@ -1215,6 +1265,9 @@ def ip_timeout_enforcer():
 
     ip_and_mac_addrs = sqlm.fetch_all_ip_addr_ip_timeouts()
 
+    if not ip_and_mac_addrs:
+        return
+
     log.debug(f"ip_timeout_enforcer: IP and MAC addrs in db: {ip_and_mac_addrs}")
 
     for ip_addr, mac_addr in ip_and_mac_addrs:
@@ -1263,6 +1316,7 @@ def ip_enforce_timeout(ip_addr, mac_addr):
 
 def wipe_ip_neigh_db():
     sqlh.wipe_table(sqlm.IP_TIMEOUT_TABLE_NAME, sqlh.USAGE_TRACKING_DB_PATH)
+    log.info("IP neigh db wiped.")
 
 
 def system_daily_wipe_check(now):

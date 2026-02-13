@@ -435,6 +435,12 @@ admin_landing_page = """
             <a href="/admin/config">
                 <button><i class="fa-solid fa-sliders"></i> System Config</button>
             </a>
+            <form method="post" action="/admin/reset"
+                  onsubmit="return confirm('This action will delete all user information. Are you sure you want to reset?');">
+                <button type="submit" class="danger">
+                    <i class="fa-solid fa-triangle-exclamation"></i> Reset System
+                </button>
+            </form>
         </div>
     </div>
 </body>

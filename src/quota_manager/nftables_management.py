@@ -131,6 +131,18 @@ def flush_set(table_family, table_name, set_name):
     rc, out, err = nft.json_cmd(flush_payload)
 
 
+def flush_all_tracking_sets(table_family, table_name):
+    tracking_sets = [
+        AUTH_SET_NAME,
+        THROTTLE_SET_NAME,
+        HIGH_SPEED_SET_NAME,
+        DROP_SET_NAME,
+    ]
+
+    for set_name in tracking_sets:
+        flush_set(table_family, table_name, set_name)
+
+
 def check_if_elem_in_set(test_elem, table_family, table_name, set_name):
     if nftables is None:
         raise RuntimeError("nftables python bindings not installed")
