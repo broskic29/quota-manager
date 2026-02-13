@@ -5,6 +5,7 @@ from queue import Queue
 from time import sleep
 
 from quota_manager.usage_tracker import start_usage_tracking, usage_update_event
+from quota_manager.quota_management import log_out_all_users
 from quota_manager.sql_management import init_freeradius_db, init_usage_db
 from quota_manager.flask_tools.user_login_flask_server import user_app
 from quota_manager.flask_tools.admin_management_flask_server import admin_management_app
@@ -83,6 +84,8 @@ class QuotaManagerApp:
 
     def stop(self):
         log.info("Stopping Quota Manager...")
+
+        log_out_all_users()
 
         # Stop ARP threads
         self.stop_event.set()
