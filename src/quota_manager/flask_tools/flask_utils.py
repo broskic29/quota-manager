@@ -151,17 +151,21 @@ def authenticate_radius(username, password, ip_address, mac_address):
 def safe_call(fn, error, msgs, *args, **kwargs):
     try:
         vals = fn(*args, **kwargs)
-    except tuple(msgs) as e:
-        if msgs[type(e)] is None:
+        return vals, error
+    except tuple(msgs.keys()) as e:
+        matched_key = next((k for k in msgs.keys() if isinstance(e, k)), None)
+        mapped = msgs.get(matched_key, msgs.get(UndefinedException))
+
+        if mapped is None:
             log.exception(e)
             return None, error_appender(error, e)
         else:
-            log.exception(msgs[type(e)])
-            return None, error_appender(error, msgs[type(e)])
-    except Exception as e:
-        log.exception(msgs[UndefinedException])
-        return None, error_appender(error, msgs[UndefinedException])
-    return vals, error
+            log.exception(mapped)
+            return None, error_appender(error, mapped)
+    except Exception:
+        mapped = msgs.get(UndefinedException, "Internal error.\n")
+        log.exception(mapped)
+        return None, error_appender(error, mapped)
 
 
 def byte_conversion(usage_bytes):

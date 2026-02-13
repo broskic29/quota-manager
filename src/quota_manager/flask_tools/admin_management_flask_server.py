@@ -6,6 +6,7 @@ import quota_manager.sql_management as sqlm
 import quota_manager.quota_management as qm
 import quota_manager.sqlite_helper_functions as sqlh
 import quota_manager.flask_tools.flask_utils as flu
+import quota_manager.quota_tools.smart_quota_tool as sqt
 
 import quota_manager.flask_tools.admin_html as ahtml
 
@@ -18,6 +19,11 @@ admin_management_app = Flask(__name__)
 log = logging.getLogger(__name__)
 
 DEFAULT_PASSWORD = "password"
+
+
+@admin_management_app.route("/")
+def root():
+    return redirect(url_for("admin_home"))
 
 
 @admin_management_app.route("/admin")
@@ -154,11 +160,6 @@ def usage_overview():
     return "<h2>Usage overview coming soon</h2>"
 
 
-@admin_management_app.route("/")
-def root():
-    return redirect(url_for("admin_home"))
-
-
 @admin_management_app.route("/admin/users")
 @flu.require_admin_auth
 def manage_users():
@@ -264,6 +265,7 @@ def delete_user(username):
 @flu.require_admin_auth
 def manage_groups():
     rows = sqlm.fetch_group_quota_info_usage()
+    log.debug(rows)
     # rows: (group_name, num_members, desired_quota_ratio, min_quota_ratio, max_num_bytes, min_num_bytes, mse_weights)
     groups = [
         SimpleNamespace(
@@ -289,6 +291,7 @@ def update_group_ratio(group_name):
     GROUP_UPDATE_ERROR_MESSAGES = {
         ValueError: None,
         qm.QuotaAllottmentError: None,
+        sqt.QuotaConfigError: None,
         flu.UndefinedException: "Internal error updating group ratio.\n",
     }
 
@@ -306,16 +309,28 @@ def update_group_ratio(group_name):
         return render_template_string(ahtml.success_page, message=error)
 
     sqlm.update_group_desired_quota_ratio(group_name, desired_quota_ratio)
+    msg = (
+        f"Successfully updated quota ratio for {group_name} to {desired_quota_ratio}.\n"
+    )
 
     # Recompute quotas immediately so admin sees it “take”
     tz = dt.timezone(dt.timedelta(hours=sqlh.UTC_OFFSET))
     now = dt.datetime.now(tz)
-    try:
-        qm.update_group_quotas(now, qm.ACCOUNT_BILLING_DAY)
-    except Exception:
-        log.exception("Non-fatal: quota recompute failed after ratio update.")
 
-    return redirect(url_for("manage_groups"))
+    _, error = flu.safe_call(
+        qm.update_group_quotas,
+        error,
+        GROUP_UPDATE_ERROR_MESSAGES,
+        now,
+        qm.ACCOUNT_BILLING_DAY,
+    )
+    if error:
+        return render_template_string(ahtml.success_page, message=msg + str(error))
+
+    return render_template_string(
+        ahtml.success_page,
+        message=f"Successfully updated quota ratio for {group_name} to {desired_quota_ratio}.",
+    )
 
 
 @admin_management_app.route("/admin/groups/<group_name>/delete", methods=["POST"])
@@ -372,4 +387,36 @@ def admin_config():
         active_days=cfg["active_days_list"],
         mac_set_limitation=cfg["mac_set_limitation"],
         allowed_macs=cfg["allowed_macs"],
+    )
+
+
+@admin_management_app.route("/admin/reset", methods=["POST"])
+@flu.require_admin_auth
+def reset_system():
+    error = None
+
+    RESET_ERROR_MESSAGES = {
+        flu.UndefinedException: (
+            "Internal error resetting system. Please check logs and try again."
+        )
+    }
+
+    # Best-effort: remove connectivity before deleting users.
+    try:
+        qm.log_out_all_users()
+    except Exception:
+        log.exception("Reset: failed to log out all users before wiping user data.")
+
+    _, error = flu.safe_call(
+        qm.system_hard_reset,
+        error,
+        RESET_ERROR_MESSAGES,
+    )
+
+    if error:
+        return render_template_string(ahtml.success_page, message=error)
+
+    return render_template_string(
+        ahtml.success_page,
+        message="System reset successful. All tables and tracking information deleted.",
     )

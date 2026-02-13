@@ -1,6 +1,5 @@
 import sqlite3
 import logging
-import json
 
 from pathlib import Path
 import subprocess
@@ -54,6 +53,12 @@ class GroupMissingError(Exception):
 
 class GroupMemberError(Exception):
     """Raised when a user is not a member of any group."""
+
+    pass
+
+
+class DBInitializationError(Exception):
+    """Raised when databases fail to initialize."""
 
     pass
 
@@ -237,6 +242,8 @@ def init_usage_db():
                 active_config=1,
             )
 
+        sqlh.log_all_table_information("configs")
+
         if sqlh.check_if_table_empty(
             SYSTEM_STATE_TABLE_NAME, sqlh.USAGE_TRACKING_DB_PATH
         ):
@@ -245,7 +252,10 @@ def init_usage_db():
             now = dt.datetime.now(tz)
             date_str = now.date().isoformat()
 
-            config = fetch_active_config()
+            try:
+                config = fetch_active_config()
+            except ConfigNameError as e:
+                raise DBInitializationError(f"Databases failed to iniitalize: {e}")
 
             # Default: Mon-Fri active (0-4), throttling off, mac limitation off
             initialize_system_state_usage(
@@ -975,6 +985,14 @@ def update_config_usage(
 
 
 def fetch_active_config_row(db_path=sqlh.USAGE_TRACKING_DB_PATH):
+    if not sqlh.check_if_table_exists(
+        CONFIGS_TABLE_NAME, sqlh.USAGE_TRACKING_DB_PATH
+    ) or sqlh.check_if_table_empty(CONFIGS_TABLE_NAME, sqlh.USAGE_TRACKING_DB_PATH):
+        log.debug(
+            f"fetch_active_config_row: Table {CONFIGS_TABLE_NAME} empty or does not exist."
+        )
+        return
+
     con = sqlite3.connect(db_path, timeout=30, isolation_level=None)
     cur = con.cursor()
     cur.execute(
@@ -992,6 +1010,14 @@ def fetch_active_config_row(db_path=sqlh.USAGE_TRACKING_DB_PATH):
 
 
 def fetch_active_config(db_path=sqlh.USAGE_TRACKING_DB_PATH) -> dict:
+    if not sqlh.check_if_table_exists(
+        CONFIGS_TABLE_NAME, sqlh.USAGE_TRACKING_DB_PATH
+    ) or sqlh.check_if_table_empty(CONFIGS_TABLE_NAME, sqlh.USAGE_TRACKING_DB_PATH):
+        log.debug(
+            f"fetch_active_config: Table {CONFIGS_TABLE_NAME} empty or does not exist."
+        )
+        raise ConfigNameError("Config table empty or does not exist.")
+
     row = fetch_active_config_row(db_path)
     if not row:
         # fallback to name="default" if present
@@ -1038,6 +1064,16 @@ def fetch_active_config(db_path=sqlh.USAGE_TRACKING_DB_PATH) -> dict:
 
 def fetch_system_state_row(db_path=sqlh.USAGE_TRACKING_DB_PATH):
 
+    if not sqlh.check_if_table_exists(
+        SYSTEM_STATE_TABLE_NAME, sqlh.USAGE_TRACKING_DB_PATH
+    ) or sqlh.check_if_table_empty(
+        SYSTEM_STATE_TABLE_NAME, sqlh.USAGE_TRACKING_DB_PATH
+    ):
+        log.debug(
+            f"fetch_system_state_row: Table {SYSTEM_STATE_TABLE_NAME} empty or does not exist."
+        )
+        return
+
     config = fetch_active_config()
 
     con = sqlite3.connect(db_path, timeout=30, isolation_level=None)
@@ -1057,6 +1093,16 @@ def fetch_system_state_row(db_path=sqlh.USAGE_TRACKING_DB_PATH):
 
 
 def fetch_system_state(db_path=sqlh.USAGE_TRACKING_DB_PATH) -> dict:
+    if not sqlh.check_if_table_exists(
+        SYSTEM_STATE_TABLE_NAME, sqlh.USAGE_TRACKING_DB_PATH
+    ) or sqlh.check_if_table_empty(
+        SYSTEM_STATE_TABLE_NAME, sqlh.USAGE_TRACKING_DB_PATH
+    ):
+        log.debug(
+            f"fetch_system_state: Table {SYSTEM_STATE_TABLE_NAME} empty or does not exist."
+        )
+        return
+
     row = fetch_system_state_row(db_path)
 
     # row layout depends on select_config_row vs fetch_active_config_row:
@@ -1078,7 +1124,15 @@ def fetch_system_state(db_path=sqlh.USAGE_TRACKING_DB_PATH) -> dict:
 
 
 def fetch_user_mac_address_usage(username, db_path=sqlh.USAGE_TRACKING_DB_PATH):
-
+    if not sqlh.check_if_table_exists(
+        USAGE_TRACKING_TABLE_NAME, sqlh.USAGE_TRACKING_DB_PATH
+    ) or sqlh.check_if_table_empty(
+        USAGE_TRACKING_TABLE_NAME, sqlh.USAGE_TRACKING_DB_PATH
+    ):
+        log.debug(
+            f"fetch_user_mac_address_usage: Table {USAGE_TRACKING_TABLE_NAME} empty or does not exist."
+        )
+        return
     # Raise error if user doesn't exist
     user_exists = check_if_user_exists(username)
 
@@ -1107,7 +1161,15 @@ def fetch_user_mac_address_usage(username, db_path=sqlh.USAGE_TRACKING_DB_PATH):
 
 
 def fetch_user_ip_address_usage(username, db_path=sqlh.USAGE_TRACKING_DB_PATH):
-
+    if not sqlh.check_if_table_exists(
+        USAGE_TRACKING_TABLE_NAME, sqlh.USAGE_TRACKING_DB_PATH
+    ) or sqlh.check_if_table_empty(
+        USAGE_TRACKING_TABLE_NAME, sqlh.USAGE_TRACKING_DB_PATH
+    ):
+        log.debug(
+            f"fetch_user_ip_address_usage: Table {USAGE_TRACKING_TABLE_NAME} empty or does not exist."
+        )
+        return
     # Raise error if user doesn't exist
     user_exists = check_if_user_exists(username)
 
@@ -1204,6 +1266,12 @@ def get_usernames_from_ip_and_mac_usage(
 
 
 def fetch_all_usernames_usage(db_path=sqlh.USAGE_TRACKING_DB_PATH):
+    if not sqlh.check_if_table_exists(
+        USAGE_TRACKING_TABLE_NAME, sqlh.USAGE_TRACKING_DB_PATH
+    ) or sqlh.check_if_table_empty(
+        USAGE_TRACKING_TABLE_NAME, sqlh.USAGE_TRACKING_DB_PATH
+    ):
+        return
     con = sqlite3.connect(db_path, timeout=30, isolation_level=None)
     cur = con.cursor()
     cur.execute(
@@ -1216,34 +1284,90 @@ def fetch_all_usernames_usage(db_path=sqlh.USAGE_TRACKING_DB_PATH):
 
 
 def fetch_group_quota_info_usage(db_path=sqlh.USAGE_TRACKING_DB_PATH):
+
+    if not sqlh.check_if_table_exists(
+        GROUP_TABLE_NAME, sqlh.USAGE_TRACKING_DB_PATH
+    ) or sqlh.check_if_table_empty(GROUP_TABLE_NAME, sqlh.USAGE_TRACKING_DB_PATH):
+        log.debug(
+            f"fetch_group_quota_info_usage: Table {GROUP_TABLE_NAME} empty or does not exist."
+        )
+        return
+
     con = sqlite3.connect(db_path, timeout=30, isolation_level=None)
     cur = con.cursor()
-    cur.execute(
-        f"""
-        SELECT
-            g.group_name,
-            COUNT(gu.user_id) AS num_members,
-            g.desired_quota_ratio, g.min_quota_ratio,
-            g.max_num_bytes,
-            g.min_num_bytes,
-            g.mse_weights
-        FROM {GROUP_TABLE_NAME} g
-        LEFT JOIN group_users gu ON gu.group_id = g.id
-        GROUP BY
-            g.id,
-            g.group_name,
-            g.desired_quota_ratio,
-            g.min_quota_ratio,
-            g.max_num_bytes,
-            g.min_num_bytes,
-            g.mse_weights
-        ORDER BY g.group_name;
-        """,
-    )
-    return cur.fetchall()
+
+    if sqlh.check_if_table_empty(
+        GROUP_USERS_TABLE_NAME, sqlh.USAGE_TRACKING_DB_PATH
+    ) or not sqlh.check_if_table_exists(
+        GROUP_USERS_TABLE_NAME, sqlh.USAGE_TRACKING_DB_PATH
+    ):
+        log.debug(
+            f"fetch_group_quota_info_usage: Table {GROUP_USERS_TABLE_NAME} empty or does not exist. Setting num_members for each group to zero."
+        )
+        cur.execute(
+            f"""
+            SELECT
+                g.group_name,
+                g.desired_quota_ratio, g.min_quota_ratio,
+                g.max_num_bytes,
+                g.min_num_bytes,
+                g.mse_weights
+            FROM {GROUP_TABLE_NAME} g
+            ORDER BY g.group_name;
+            """,
+        )
+
+        res = cur.fetchall()
+        # Insert value 0 at position 1, thereby setting num_member = 0
+        new_res = [list(interior_tuple) for interior_tuple in res]
+        for interior_list in new_res:
+            interior_list.insert(1, 0)
+        res = [tuple(interior_list) for interior_list in new_res]
+
+    else:
+        cur.execute(
+            f"""
+            SELECT
+                g.group_name,
+                COUNT(gu.user_id) AS num_members,
+                g.desired_quota_ratio, g.min_quota_ratio,
+                g.max_num_bytes,
+                g.min_num_bytes,
+                g.mse_weights
+            FROM {GROUP_TABLE_NAME} g
+            LEFT JOIN group_users gu ON gu.group_id = g.id
+            GROUP BY
+                g.id,
+                g.group_name,
+                g.desired_quota_ratio,
+                g.min_quota_ratio,
+                g.max_num_bytes,
+                g.min_num_bytes,
+                g.mse_weights
+            ORDER BY g.group_name;
+            """,
+        )
+        res = cur.fetchall()
+    return res
 
 
 def fetch_all_users_with_groups_usage(db_path=sqlh.USAGE_TRACKING_DB_PATH):
+    if not sqlh.check_if_table_exists(
+        USAGE_TRACKING_TABLE_NAME, sqlh.USAGE_TRACKING_DB_PATH
+    ) or sqlh.check_if_table_empty(
+        USAGE_TRACKING_TABLE_NAME, sqlh.USAGE_TRACKING_DB_PATH
+    ):
+        log.debug(
+            f"fetch_all_users_with_groups_usage: Table {USAGE_TRACKING_TABLE_NAME} empty or does not exist."
+        )
+        return
+    if not sqlh.check_if_table_exists(
+        GROUP_TABLE_NAME, sqlh.USAGE_TRACKING_DB_PATH
+    ) or sqlh.check_if_table_empty(GROUP_TABLE_NAME, sqlh.USAGE_TRACKING_DB_PATH):
+        log.debug(
+            f"fetch_all_users_with_groups_usage: Table {GROUP_TABLE_NAME} empty or does not exist."
+        )
+        return
     con = sqlite3.connect(db_path, timeout=30, isolation_level=None)
     cur = con.cursor()
     cur.execute(
@@ -1261,6 +1385,13 @@ def fetch_all_users_with_groups_usage(db_path=sqlh.USAGE_TRACKING_DB_PATH):
 
 
 def fetch_desired_quota_ratios(db_path=sqlh.USAGE_TRACKING_DB_PATH):
+    if not sqlh.check_if_table_exists(
+        GROUP_TABLE_NAME, sqlh.USAGE_TRACKING_DB_PATH
+    ) or sqlh.check_if_table_empty(GROUP_TABLE_NAME, sqlh.USAGE_TRACKING_DB_PATH):
+        log.debug(
+            f"fetch_desired_quota_ratios: Table {GROUP_TABLE_NAME} empty or does not exist."
+        )
+        return
     con = sqlite3.connect(db_path, timeout=30, isolation_level=None)
     cur = con.cursor()
     cur.execute(
@@ -1276,6 +1407,15 @@ def fetch_desired_quota_ratios(db_path=sqlh.USAGE_TRACKING_DB_PATH):
 def fetch_config_total_bytes(
     config_name="default", db_path=sqlh.USAGE_TRACKING_DB_PATH
 ):
+    if not sqlh.check_if_table_exists(
+        USAGE_TRACKING_TABLE_NAME, sqlh.USAGE_TRACKING_DB_PATH
+    ) or sqlh.check_if_table_empty(
+        USAGE_TRACKING_TABLE_NAME, sqlh.USAGE_TRACKING_DB_PATH
+    ):
+        log.debug(
+            f"fetch_config_total_bytes: Table {USAGE_TRACKING_TABLE_NAME} empty or does not exist."
+        )
+        return 0
     con = sqlite3.connect(db_path, timeout=30, isolation_level=None)
     cur = con.cursor()
     cur.execute(
@@ -1294,6 +1434,30 @@ def fetch_max_daily_usage(db_path=sqlh.USAGE_TRACKING_DB_PATH):
     """
     Should iterate across each user in the system, summing (user_quota - daily_usage). If user has a temporary quota, sum that instead.
     """
+    if not sqlh.check_if_table_exists(
+        USAGE_TRACKING_TABLE_NAME, sqlh.USAGE_TRACKING_DB_PATH
+    ) or sqlh.check_if_table_empty(
+        USAGE_TRACKING_TABLE_NAME, sqlh.USAGE_TRACKING_DB_PATH
+    ):
+        log.debug(
+            f"fetch_max_daily_usage: Table {USAGE_TRACKING_TABLE_NAME} empty or does not exist."
+        )
+        return 0
+    if not sqlh.check_if_table_exists(
+        GROUP_TABLE_NAME, sqlh.USAGE_TRACKING_DB_PATH
+    ) or sqlh.check_if_table_empty(GROUP_TABLE_NAME, sqlh.USAGE_TRACKING_DB_PATH):
+        log.debug(
+            f"fetch_max_daily_usage: Table {GROUP_TABLE_NAME} empty or does not exist."
+        )
+        return 0
+    if not sqlh.check_if_table_exists(
+        GROUP_USERS_TABLE_NAME, sqlh.USAGE_TRACKING_DB_PATH
+    ) or sqlh.check_if_table_empty(GROUP_USERS_TABLE_NAME, sqlh.USAGE_TRACKING_DB_PATH):
+        log.debug(
+            f"fetch_max_daily_usage: Table {GROUP_USERS_TABLE_NAME} empty or does not exist."
+        )
+        return 0
+
     con = sqlite3.connect(db_path, timeout=30, isolation_level=None)
     cur = con.cursor()
 
@@ -1324,7 +1488,14 @@ def fetch_max_daily_usage(db_path=sqlh.USAGE_TRACKING_DB_PATH):
 
 def fetch_all_monthly_usage_bytes(db_path=sqlh.USAGE_TRACKING_DB_PATH):
 
-    if sqlh.check_if_table_empty("users", sqlh.USAGE_TRACKING_DB_PATH):
+    if not sqlh.check_if_table_exists(
+        USAGE_TRACKING_TABLE_NAME, sqlh.USAGE_TRACKING_DB_PATH
+    ) or sqlh.check_if_table_empty(
+        USAGE_TRACKING_TABLE_NAME, sqlh.USAGE_TRACKING_DB_PATH
+    ):
+        log.debug(
+            f"fetch_max_daily_usage: Table {USAGE_TRACKING_TABLE_NAME} empty or does not exist."
+        )
         return 0
 
     con = sqlite3.connect(db_path, timeout=30, isolation_level=None)
@@ -1339,6 +1510,12 @@ def fetch_all_monthly_usage_bytes(db_path=sqlh.USAGE_TRACKING_DB_PATH):
 
 
 def fetch_all_ip_addr_ip_timeouts(db_path=sqlh.USAGE_TRACKING_DB_PATH):
+    if not sqlh.check_if_table_exists(
+        USAGE_TRACKING_TABLE_NAME, sqlh.USAGE_TRACKING_DB_PATH
+    ) or sqlh.check_if_table_empty(
+        USAGE_TRACKING_TABLE_NAME, sqlh.USAGE_TRACKING_DB_PATH
+    ):
+        return
     con = sqlite3.connect(db_path, timeout=30, isolation_level=None)
     cur = con.cursor()
     cur.execute(
@@ -1351,6 +1528,16 @@ def fetch_all_ip_addr_ip_timeouts(db_path=sqlh.USAGE_TRACKING_DB_PATH):
 
 
 def fetch_session_total_bytes(username, db_path=sqlh.USAGE_TRACKING_DB_PATH):
+    if not sqlh.check_if_table_exists(
+        USAGE_TRACKING_TABLE_NAME, sqlh.USAGE_TRACKING_DB_PATH
+    ) or sqlh.check_if_table_empty(
+        USAGE_TRACKING_TABLE_NAME, sqlh.USAGE_TRACKING_DB_PATH
+    ):
+        log.debug(
+            f"fetch_max_daily_usage: Table {USAGE_TRACKING_TABLE_NAME} empty or does not exist."
+        )
+        return 0
+
     # Raise error if user doesn't exist
     user_exists = check_if_user_exists(username)
 
@@ -1538,6 +1725,8 @@ def usage_daily_wipe(db_path=sqlh.USAGE_TRACKING_DB_PATH):
     con.commit()
     con.close()
 
+    log.info("Daily wipe complete.")
+
 
 def usage_monthly_wipe(db_path=sqlh.USAGE_TRACKING_DB_PATH):
     con = sqlite3.connect(
@@ -1554,8 +1743,21 @@ def usage_monthly_wipe(db_path=sqlh.USAGE_TRACKING_DB_PATH):
     con.commit()
     con.close()
 
+    log.info("Monthly wipe complete.")
+
 
 def fetch_daily_bytes_usage(username, db_path=sqlh.USAGE_TRACKING_DB_PATH):
+
+    if not sqlh.check_if_table_exists(
+        USAGE_TRACKING_TABLE_NAME, sqlh.USAGE_TRACKING_DB_PATH
+    ) or sqlh.check_if_table_empty(
+        USAGE_TRACKING_TABLE_NAME, sqlh.USAGE_TRACKING_DB_PATH
+    ):
+        log.debug(
+            f"fetch_max_daily_usage: Table {USAGE_TRACKING_TABLE_NAME} empty or does not exist."
+        )
+        return 0
+
     # Raise error if user doesn't exist
     user_exists = check_if_user_exists(username)
 
@@ -1594,6 +1796,30 @@ def fetch_daily_bytes_usage(username, db_path=sqlh.USAGE_TRACKING_DB_PATH):
 def fetch_high_speed_quota_for_user_usage(
     username, db_path=sqlh.USAGE_TRACKING_DB_PATH
 ):
+    if not sqlh.check_if_table_exists(
+        USAGE_TRACKING_TABLE_NAME, sqlh.USAGE_TRACKING_DB_PATH
+    ) or sqlh.check_if_table_empty(
+        USAGE_TRACKING_TABLE_NAME, sqlh.USAGE_TRACKING_DB_PATH
+    ):
+        log.debug(
+            f"fetch_max_daily_usage: Table {USAGE_TRACKING_TABLE_NAME} empty or does not exist."
+        )
+        return 0
+    if not sqlh.check_if_table_exists(
+        GROUP_TABLE_NAME, sqlh.USAGE_TRACKING_DB_PATH
+    ) or sqlh.check_if_table_empty(GROUP_TABLE_NAME, sqlh.USAGE_TRACKING_DB_PATH):
+        log.debug(
+            f"fetch_max_daily_usage: Table {GROUP_TABLE_NAME} empty or does not exist."
+        )
+        return 0
+    if not sqlh.check_if_table_exists(
+        GROUP_USERS_TABLE_NAME, sqlh.USAGE_TRACKING_DB_PATH
+    ) or sqlh.check_if_table_empty(GROUP_USERS_TABLE_NAME, sqlh.USAGE_TRACKING_DB_PATH):
+        log.debug(
+            f"fetch_max_daily_usage: Table {GROUP_USERS_TABLE_NAME} empty or does not exist."
+        )
+        return 0
+
     # Raise error if user doesn't exist, isn't in group, or if group doesn't exist
     user_exists = check_if_user_exists(username)
 
@@ -1652,6 +1878,17 @@ def fetch_high_speed_quota_for_user_usage(
 
 
 def fetch_session_start_bytes(username, db_path=sqlh.USAGE_TRACKING_DB_PATH):
+
+    if not sqlh.check_if_table_exists(
+        USAGE_TRACKING_TABLE_NAME, sqlh.USAGE_TRACKING_DB_PATH
+    ) or sqlh.check_if_table_empty(
+        USAGE_TRACKING_TABLE_NAME, sqlh.USAGE_TRACKING_DB_PATH
+    ):
+        log.debug(
+            f"fetch_max_daily_usage: Table {USAGE_TRACKING_TABLE_NAME} empty or does not exist."
+        )
+        return 0
+
     # Raise error if user doesn't exist
     user_exists = check_if_user_exists(username)
 

@@ -56,7 +56,7 @@ def event_scheduler(stop_event: threading.Event):
         now = dt.datetime.now(tz)
 
         if now.day == qm.ACCOUNT_BILLING_DAY:
-            monthly_events(now)
+            monthly_events()
 
         daily_events(now)
 
@@ -64,29 +64,24 @@ def event_scheduler(stop_event: threading.Event):
 def daily_events(now):
 
     sqlm.usage_daily_wipe()
-    log.info("Daily wipe complete.")
 
     qm.log_out_all_users()
-    log.info("All users logged out.")
 
     qm.wipe_ip_neigh_db()
-    log.info("IP neigh db wiped.")
 
     qm.reset_throttling_and_packet_dropping_all_users()
-    log.info("Throttling and packet dropping reset.")
 
     qm.update_group_quotas(now, qm.ACCOUNT_BILLING_DAY)
-    log.info("Updated daily quotas for all groups.")
 
 
-def monthly_events(now):
+def monthly_events():
     sqlm.usage_monthly_wipe()
-    log.info("Monthly wipe complete.")
 
 
 def usage_updater(stop_event: threading.Event):
 
     quota_dict = {}
+    usage_dict = {}
 
     while not stop_event.is_set():
         if stop_event.wait(USAGE_UPDATE_INTERVAL):
@@ -96,31 +91,25 @@ def usage_updater(stop_event: threading.Event):
             tz = dt.timezone(dt.timedelta(hours=UTC_OFFSET))
             now = dt.datetime.now(tz)
 
-            log.debug("Checking to see if system was daily wiped...")
             system_daily_wiped = qm.system_daily_wipe_check(now)
             if not system_daily_wiped:
                 log.debug("System not daily wiped, wiping system...")
                 daily_events(now)
                 qm.update_system_date(now)
 
-            log.debug("Checking to see if system was monthly wiped...")
             system_monthly_wiped = qm.system_monthly_wipe_check()
             if not system_monthly_wiped:
                 log.debug("System not monthly wiped, wiping system...")
-                monthly_events(now)
+                monthly_events()
                 qm.update_monthly_wipe()
 
-            log.debug("Updating user byte totals...")
-            usage_dict = qm.update_all_users_bytes()
-            log.debug(usage_dict)
+            usage_dict = qm.update_all_users_bytes(usage_dict)
 
-            log.debug("Updating quota information for all users...")
             quota_dict = qm.update_quota_information_all_users(quota_dict)
 
-            log.debug("Enforcing quotas for all users...")
             qm.enforce_quotas_all_users(throttling=False)
-        except Exception:
-            log.exception("usage_updater crashed during update loop.")
+        except Exception as e:
+            log.exception(f"usage_updater: System crashed during update loop: {e}")
             stop_event.set()
             break
 

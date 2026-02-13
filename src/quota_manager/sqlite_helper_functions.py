@@ -22,7 +22,7 @@ class IPAddressError(Exception):
     pass
 
 
-def check_if_table_exists(table_name, db_path=RADIUS_DB_PATH):
+def check_if_table_exists(table_name, db_path):
     con = sqlite3.connect(db_path, timeout=30, isolation_level=None)
     cur = con.cursor()
     cur.execute(
