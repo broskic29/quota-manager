@@ -106,7 +106,7 @@ def validate_quota_config(cfg: dict) -> None:
             f"Sum(min_quota_ratio)={min_r_sum} exceeds 1; impossible."
         )
 
-    if daily < min_cost - tol:
+    if daily < min_cost - tol or daily == 0:
         raise InsufficientBytesError(
             f"daily_bytes ({daily}) below min feasible total ({min_cost})."
         )

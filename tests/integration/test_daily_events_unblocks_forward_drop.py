@@ -287,7 +287,7 @@ def test_daily_events_unblocks_forward_dropped_user(monkeypatch):
                 # Run daily_events -> should flush drop set -> success
                 tz = dt.timezone(dt.timedelta(hours=2))
                 now = dt.datetime(2026, 2, 10, 0, 1, tzinfo=tz)
-                ut.daily_events(now)
+                ut.daily_events(now=now)
 
                 ok = h._cmd(
                     [

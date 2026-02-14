@@ -1292,20 +1292,26 @@ admin_usage_template = """
       <div class="top">
         <div class="stat">
           <div class="label">Today's usage (all users)</div>
-          <div class="value">{{ daily_used | round(2) }} / {{ daily_budget | round(2) }} {{ daily_unit }}</div>
+          <div class="value">
+            {{ (daily_used|default(0))|round(2) }} / {{ (daily_budget|default(0))|round(2) }} {{ daily_unit or "" }}
+          </div>
           <div class="muted">Daily reset: 24:00</div>
         </div>
 
         <div class="stat">
           <div class="label">Monthly usage (all users)</div>
-          <div class="value">{{ monthly_used | round(2) }} / {{ monthly_budget | round(2) }} {{ monthly_unit }}</div>
-          <div class="muted">Remaining: {{ monthly_remaining | round(2) }} {{ monthly_unit }}</div>
+          <div class="value">
+            {{ (monthly_used|default(0))|round(2) }} / {{ (monthly_budget|default(0))|round(2) }} {{ monthly_unit or "" }}
+          </div>
+          <div class="muted">
+            Remaining: {{ (monthly_remaining|default(0))|round(2) }} {{ monthly_unit or "" }}
+          </div>
         </div>
 
         <div class="stat">
           <div class="label">Monthly reset</div>
-          <div class="value">{{ reset_dt }}</div>
-          <div class="muted">Billing day: {{ billing_day }}</div>
+          <div class="value">{{ reset_dt or "-" }}</div>
+          <div class="muted">Billing day: {{ billing_day or "-" }}</div>
         </div>
       </div>
 
@@ -1334,10 +1340,10 @@ admin_usage_template = """
         <tbody>
           {% for u in users %}
             <tr>
-              <td><b>{{ u.username }}</b></td>
-              <td>{{ u.group_name or '-' }}</td>
-              <td>{{ u.daily_mib | round(2) }}</td>
-              <td>{{ u.monthly_gib | round(2) }}</td>
+              <td><b>{{ u.username or "-" }}</b></td>
+              <td>{{ u.group_name or "-" }}</td>
+              <td>{{ (u.daily_mib|default(0))|round(2) }}</td>
+              <td>{{ (u.monthly_gib|default(0))|round(2) }}</td>
               <td>
                 {% if u.logged_in %}
                   <span class="pill on">online</span>
@@ -1345,8 +1351,8 @@ admin_usage_template = """
                   <span class="pill off">offline</span>
                 {% endif %}
               </td>
-              <td>{{ u.ip_address or '-' }}</td>
-              <td>{{ u.mac_address or '-' }}</td>
+              <td>{{ u.ip_address or "-" }}</td>
+              <td>{{ u.mac_address or "-" }}</td>
               <td>
                 <div class="actions">
                   {% if u.logged_in and u.ip_address %}
@@ -1364,7 +1370,7 @@ admin_usage_template = """
             </tr>
           {% endfor %}
 
-          {% if users|length == 0 %}
+          {% if users is not defined or users|length == 0 %}
             <tr><td colspan="8" class="muted">No users found.</td></tr>
           {% endif %}
         </tbody>

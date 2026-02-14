@@ -38,7 +38,7 @@ def test_daily_events_runs_expected_calls(db_paths, monkeypatch):
     tz = dt.timezone(dt.timedelta(hours=2))
     now = dt.datetime(2026, 2, 9, 0, 0, tzinfo=tz)
 
-    ut.daily_events(now)
+    ut.daily_events(now=now)
 
     assert called["logout_all"] == 1
     assert called["wipe_ip"] == 1

@@ -46,7 +46,11 @@ def test_update_group_quotas_no_users_is_noop(db_paths, monkeypatch):
         lambda *a, **k: called.__setitem__("opt", called["opt"] + 1),
     )
 
-    qm.update_group_quotas(now, qm.ACCOUNT_BILLING_DAY)
+    group_quotas_dict = qm.calculate_hypothetical_group_quotas_for_today(
+        now=now, reset_day=qm.ACCOUNT_BILLING_DAY
+    )
+
+    qm.apply_new_quotas(group_quotas_dict)
 
     assert called["opt"] == 0
 
@@ -76,7 +80,11 @@ def test_update_group_quotas_one_group_stable(db_paths, monkeypatch):
         qm.sqt, "quota_vector_generator", lambda cfg: {"v_dict": {"alpha": 1024}}
     )
 
-    qm.update_group_quotas(now, qm.ACCOUNT_BILLING_DAY)
+    group_quotas_dict = qm.calculate_hypothetical_group_quotas_for_today(
+        now=now, reset_day=qm.ACCOUNT_BILLING_DAY
+    )
+
+    qm.apply_new_quotas(group_quotas_dict)
 
     # confirm group quota updated in DB
     con = sqlite3.connect(usage_db)

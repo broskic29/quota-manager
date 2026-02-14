@@ -4,7 +4,7 @@ from waitress import serve
 from queue import Queue
 from time import sleep
 
-from quota_manager.usage_tracker import start_usage_tracking, usage_update_event
+from quota_manager.usage_tracker import start_usage_tracking
 from quota_manager.quota_management import log_out_all_users
 from quota_manager.sql_management import init_freeradius_db, init_usage_db
 from quota_manager.flask_tools.user_login_flask_server import user_app
@@ -15,6 +15,9 @@ from quota_manager.ip_neigh_timeout_listener import (
 )
 
 log = logging.getLogger(__name__)
+
+logging.getLogger("asyncio").setLevel(logging.WARNING)
+logging.getLogger("asyncio.selector_events").setLevel(logging.WARNING)
 
 
 class QuotaManagerApp:
@@ -32,8 +35,6 @@ class QuotaManagerApp:
         self._start_flask_servers()
         self._start_usage_tracking()
         self._start_ip_neigh_threads()
-
-        usage_update_event()
 
         try:
             while not self.stop_event.is_set():

@@ -52,7 +52,7 @@ def test_day_rollover_resets_daily_not_monthly_and_quota_state_recovers(
     tz = dt.timezone(dt.timedelta(hours=2))
     now_after_midnight = dt.datetime(2026, 2, 10, 0, 1, tzinfo=tz)
 
-    ut.daily_events(now_after_midnight)
+    ut.daily_events(now=now_after_midnight)
 
     assert sqlm.fetch_daily_bytes_usage("bob", db_path=usage_db) == 0
     assert (

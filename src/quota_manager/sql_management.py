@@ -63,6 +63,12 @@ class DBInitializationError(Exception):
     pass
 
 
+class SystemStateError(Exception):
+    """System state database left in corrputed state."""
+
+    pass
+
+
 # --- Database setup ---
 def init_freeradius_db():
     p = Path(sqlh.RADIUS_DB_PATH)
@@ -73,6 +79,7 @@ def init_freeradius_db():
     ):
         log.debug("RADIUS database doesn't exist!")
         try:
+            log.debug("Initializing RADIUS database...")
             with open(sqlh.DEFAULT_SCHEMA_PATH, "r") as f:
                 subprocess.run(["sqlite3", sqlh.RADIUS_DB_PATH], stdin=f, check=True)
         except Exception as e:
@@ -82,14 +89,14 @@ def init_freeradius_db():
 # --- Database setup ---
 def init_usage_db():
 
-    log.info("Initializing usage database...")
-
     p = Path(sqlh.USAGE_TRACKING_DB_PATH)
     p.parent.mkdir(parents=True, exist_ok=True)
 
     if not p.exists():
 
         log.debug("Usage tracking database doesn't exist!")
+
+        log.info("Initializing usage database...")
 
         with open(sqlh.USAGE_TRACKING_DB_PATH, "a") as f:
             pass
@@ -243,7 +250,8 @@ def init_usage_db():
                 active_config=1,
             )
 
-        sqlh.log_all_table_information("configs")
+            log.debug(f"init_usage_db: Initialized config:")
+            sqlh.log_all_table_information(CONFIGS_TABLE_NAME)
 
         if sqlh.check_if_table_empty(
             SYSTEM_STATE_TABLE_NAME, sqlh.USAGE_TRACKING_DB_PATH
@@ -263,8 +271,16 @@ def init_usage_db():
                 system_name=config["system_name"],
                 system_date=date_str,
                 wiped_this_month=False,
+                total_daily_bytes=0,
+                total_monthly_bytes=0,
+                all_time_bytes=0,
+                num_users=0,
+                num_groups=0,
                 db_path=sqlh.USAGE_TRACKING_DB_PATH,
             )
+
+            log.debug(f"init_usage_db: Initialized system state:")
+            sqlh.log_all_table_information(SYSTEM_STATE_TABLE_NAME)
 
     except Exception as e:
         log.error(f"Exception: {e}. Failed to create usage_tracking database!")
@@ -527,6 +543,12 @@ def insert_user_into_group_usage(
 
 def get_groups_usage(db_path=None):
     db_path = db_path or sqlh.USAGE_TRACKING_DB_PATH
+
+    if not sqlh.check_if_table_exists(
+        GROUP_TABLE_NAME, sqlh.USAGE_TRACKING_DB_PATH
+    ) or sqlh.check_if_table_empty(GROUP_TABLE_NAME, sqlh.USAGE_TRACKING_DB_PATH):
+        return
+
     con = sqlite3.connect(
         db_path, timeout=30, isolation_level=None
     )  # Connects to database
@@ -979,6 +1001,16 @@ def update_config_usage(
     db_path = db_path or sqlh.USAGE_TRACKING_DB_PATH
     row = select_config_row(name)
 
+    if isinstance(active_days, list):
+        active_days = ",".join(str(d) for d in active_days)
+    elif active_days is None:
+        active_days = ""
+
+    if isinstance(allowed_macs, list):
+        allowed_macs = ",".join(str(d) for d in allowed_macs)
+    elif allowed_macs is None:
+        allowed_macs = ""
+
     # This updates the user if it already exists,
     # otherwise, creates new user.
 
@@ -1011,11 +1043,6 @@ def update_config_usage(
             WHERE name = ?
             """,
             values + [name],
-        )
-
-        log.info(f"Config {name} successfully updated.")
-        sqlh.log_all_table_information(
-            CONFIGS_TABLE_NAME, db_path=sqlh.USAGE_TRACKING_DB_PATH
         )
 
         con.commit()
@@ -1926,6 +1953,55 @@ def usage_monthly_wipe(db_path=None):
     con.close()
 
     log.info("Monthly wipe complete.")
+
+
+def fetch_daily_system_bytes(db_path=None):
+    db_path = db_path or sqlh.USAGE_TRACKING_DB_PATH
+
+    if not sqlh.check_if_table_exists(
+        SYSTEM_STATE_TABLE_NAME, sqlh.USAGE_TRACKING_DB_PATH
+    ) or sqlh.check_if_table_empty(
+        SYSTEM_STATE_TABLE_NAME, sqlh.USAGE_TRACKING_DB_PATH
+    ):
+        log.debug(
+            f"fetch_daily_bytes_usage: Table {SYSTEM_STATE_TABLE_NAME} empty or does not exist."
+        )
+        return 0
+
+    try:
+        config = fetch_active_config()
+    except ConfigNameError as e:
+        raise DBInitializationError(f"Databases failed to iniitalize: {e}")
+
+    system_name = config.get("system_name")
+
+    if config.get("system_name") is None:
+        raise SystemStateError(
+            "fetch_daily_system_bytes: System state database left in corrputed state."
+        )
+
+    con = sqlite3.connect(
+        db_path, timeout=30, isolation_level=None
+    )  # Connects to database
+    # Need to add try blocks and error catching for all of these things at some point.
+    try:
+        cur = con.cursor()
+
+        cur.execute(
+            f"""
+            SELECT total_daily_bytes
+            FROM {SYSTEM_STATE_TABLE_NAME}
+            WHERE system_name = ?
+            """,
+            (system_name,),
+        )
+        row = cur.fetchone()
+        if row is None:
+            log.error(f"ERROR: Operation to fetch daily system bytes failed.")
+            return None
+        return row[0]
+    finally:
+        con.close()
 
 
 def fetch_daily_bytes_usage(username, db_path=None):

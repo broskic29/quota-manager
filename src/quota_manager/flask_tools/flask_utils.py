@@ -195,3 +195,12 @@ def bytes_to_unit(value_bytes: float, unit: str) -> float:
 
 def pick_unit(total_bytes: float) -> str:
     return "GB" if float(total_bytes) >= float(byte_unit_multipliers["GB"]) else "MB"
+
+
+def acquire_or_busy(
+    lock, *, timeout=1.0, message="System is updating quotas. Try again in a moment."
+):
+    ok = lock.acquire(timeout=timeout)
+    if not ok:
+        raise RuntimeError(message)
+    return ok

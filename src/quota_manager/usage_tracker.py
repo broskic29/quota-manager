@@ -41,6 +41,7 @@ def monthly_delay_calc(now, tz):
 
 def event_scheduler(stop_event: threading.Event):
     while not stop_event.is_set():
+
         tz = dt.timezone(dt.timedelta(hours=UTC_OFFSET))
         now = dt.datetime.now(tz)
 
@@ -56,80 +57,133 @@ def event_scheduler(stop_event: threading.Event):
         now = dt.datetime.now(tz)
 
         if now.day == qm.ACCOUNT_BILLING_DAY:
-            monthly_events()
+            try:
+                monthly_events()
+                qm.update_monthly_wipe()
+            except Exception as e:
+                log.debug(
+                    f"event_scheduler: Failed to execute monthly events, error: {e}"
+                )
 
-        daily_events(now)
+        try:
+            daily_events()
+            qm.update_system_date(now)
+        except Exception as e:
+            log.debug(f"event_scheduler: Failed to execute daily events, error: {e}")
 
 
 def daily_events(now):
 
-    sqlm.usage_daily_wipe()
+    if not qm.RESET_LOCK.acquire(blocking=False):
+        return  # reset in progress, skip tick
+    try:
+        if not qm.QUOTA_LOCK.acquire(timeout=0.1):
+            return  # admin is changing groups/quotas; skip tick
+        try:
+            sqlm.usage_daily_wipe()
 
-    qm.log_out_all_users()
+            qm.log_out_all_users()
 
-    qm.wipe_ip_neigh_db()
+            qm.wipe_ip_neigh_db()
 
-    qm.reset_throttling_and_packet_dropping_all_users()
+            qm.reset_throttling_and_packet_dropping_all_users()
 
-    qm.update_group_quotas(now, qm.ACCOUNT_BILLING_DAY)
+            group_quotas_dict = qm.calculate_hypothetical_group_quotas_for_today(
+                now=now, reset_day=qm.ACCOUNT_BILLING_DAY
+            )
+
+            qm.apply_new_quotas(group_quotas_dict)
+        except Exception as e:
+            log.error(f"daily_events: Failed to execute daily events, error: {e}")
+        finally:
+            qm.QUOTA_LOCK.release()
+    finally:
+        qm.RESET_LOCK.release()
 
 
 def monthly_events():
-    sqlm.usage_monthly_wipe()
+
+    if not qm.RESET_LOCK.acquire(blocking=False):
+        return  # reset in progress, skip tick
+    try:
+        if not qm.QUOTA_LOCK.acquire(timeout=0.1):
+            return  # admin is changing groups/quotas; skip tick
+        try:
+            sqlm.usage_monthly_wipe()
+        except Exception as e:
+            log.error(f"monthly_events: Failed to execute daily events, error: {e}")
+        finally:
+            qm.QUOTA_LOCK.release()
+    finally:
+        qm.RESET_LOCK.release()
 
 
 def usage_updater(stop_event: threading.Event):
 
+    # Initialize continuously updated variables
     quota_dict = {}
     usage_dict = {}
+
+    num_users = None
+    num_groups = None
 
     while not stop_event.is_set():
         if stop_event.wait(USAGE_UPDATE_INTERVAL):
             break
 
+        if not qm.RESET_LOCK.acquire(blocking=False):
+            return  # reset in progress, skip tick
         try:
-            usage_update_event()
+            if not qm.QUOTA_LOCK.acquire(timeout=0.1):
+                return  # admin is changing groups/quotas; skip tick
+            try:
+                tz = dt.timezone(dt.timedelta(hours=UTC_OFFSET))
+                now = dt.datetime.now(tz)
 
-            system_daily_wiped = qm.system_daily_wipe_check(now)
-            if not system_daily_wiped:
-                log.debug("System not daily wiped, wiping system...")
-                daily_events(now)
-                qm.update_system_date(now)
+                try:
+                    system_daily_wiped = qm.system_daily_wipe_check(now)
+                    if not system_daily_wiped:
+                        log.debug("System not daily wiped, wiping system...")
 
-            system_monthly_wiped = qm.system_monthly_wipe_check()
-            if not system_monthly_wiped:
-                log.debug("System not monthly wiped, wiping system...")
-                monthly_events()
-                qm.update_monthly_wipe()
+                        daily_events()
+                        qm.update_system_date(now)
 
-            usage_dict = qm.update_all_users_bytes(usage_dict)
+                except Exception as e:
+                    log.debug(
+                        f"usage_updater: Failed to execute daily events, error: {e}"
+                    )
 
-            quota_dict = qm.update_quota_information_all_users(quota_dict)
+                try:
+                    system_monthly_wiped = qm.system_monthly_wipe_check()
+                    if not system_monthly_wiped:
+                        log.debug("System not monthly wiped, wiping system...")
 
-            qm.enforce_quotas_all_users(throttling=False)
-        except Exception as e:
-            log.exception(f"usage_updater: System crashed during update loop: {e}")
-            stop_event.set()
-            break
+                        monthly_events()
+                        qm.update_monthly_wipe()
+                except Exception as e:
+                    log.debug(
+                        f"usage_updater: Failed to execute monthly events, error: {e}"
+                    )
 
+                log.debug("Updating user byte totals...")
+                usage_dict = qm.update_all_users_bytes(usage_dict)
 
-def usage_update_event():
+                log.debug("Updating quota information for all users...")
+                quota_dict = qm.update_quota_information_all_users(quota_dict)
 
-    log.debug("Checking for missed system wipes...")
-    updating_system_wipes()
+                log.debug("Enforcing quotas for all users...")
+                qm.enforce_quotas_all_users(throttling=False)
 
-    log.debug("Updating user byte totals...")
-    usage_dict = qm.update_all_users_bytes()
-    log.debug(usage_dict)
+                num_users, num_groups = qm.update_num_entities_system_state(
+                    num_users, num_groups
+                )
 
-    log.debug("Updating system state...")
-    system_state_update()
-
-    log.debug("Updating quota information for all users...")
-    quota_dict = qm.update_quota_information_all_users(quota_dict)
-
-    log.debug("Enforcing quotas for all users...")
-    qm.enforce_quotas_all_users(throttling=False)
+            except Exception as e:
+                log.error(f"usage_updater: Failed to execute usage update, error: {e}")
+            finally:
+                qm.QUOTA_LOCK.release()
+        finally:
+            qm.RESET_LOCK.release()
 
 
 def start_usage_tracking(stop_event: threading.Event):
@@ -143,29 +197,3 @@ def start_usage_tracking(stop_event: threading.Event):
 
     log.info("Usage tracking threads started")
     return [t_wipe_scheduler, t_usage_updater]
-
-
-def updating_system_wipes():
-    tz = dt.timezone(dt.timedelta(hours=UTC_OFFSET))
-    now = dt.datetime.now(tz)
-
-    date_str = now.date().isoformat()
-
-    log.debug("Checking to see if system was daily wiped...")
-    system_daily_wiped = qm.system_daily_wipe_check(now)
-    if not system_daily_wiped:
-        log.debug("System not daily wiped, wiping system...")
-        daily_events(now)
-        sqlm.update_system_state_usage(system_date=date_str)
-
-    log.debug("Checking to see if system was monthly wiped...")
-    system_monthly_wiped = qm.system_monthly_wipe_check()
-    if not system_monthly_wiped:
-        log.debug("System not monthly wiped, wiping system...")
-        monthly_events(now)
-        sqlm.update_system_state_usage(wiped_this_month=True)
-
-
-def system_state_update():
-    log.debug("Updating num_users, num_groups...")
-    qm.update_num_entities_system_state()
