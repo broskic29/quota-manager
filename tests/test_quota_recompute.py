@@ -62,7 +62,7 @@ def test_update_group_quotas_one_group_stable(db_paths, monkeypatch):
     sqlm.create_user_usage("bob", "alpha", db_path=usage_db)
 
     # make math deterministic
-    monkeypatch.setattr(qm, "calculate_total_usage_bytes", lambda: 0)
+    monkeypatch.setattr(sqlm, "fetch_daily_system_bytes", lambda: 0)
     monkeypatch.setattr(sqlm, "fetch_config_total_bytes", lambda *a, **k: 1024)
 
     tz = qm.dt.timezone(qm.dt.timedelta(hours=2))

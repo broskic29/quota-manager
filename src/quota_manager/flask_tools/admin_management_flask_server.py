@@ -577,7 +577,7 @@ def delete_group(group_name):
         sqt.QuotaConfigError: None,
         flu.UndefinedException: "Internal error updating group ratio.\n",
     }
-
+    error = None
     members = sqlm.count_users_in_group(group_name)
     if members > 0:
         return render_template_string(
@@ -586,7 +586,7 @@ def delete_group(group_name):
         )
 
     _, error = flu.safe_call(
-        qm.delete_group_from_systems,
+        qm.delete_group_from_system,
         error,
         GROUP_DELETE_ERROR_MESSAGES,
         group_name,

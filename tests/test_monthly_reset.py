@@ -23,7 +23,7 @@ def test_monthly_events_resets_monthly_and_clears_temporary_quota(db_paths):
 
     tz = dt.timezone(dt.timedelta(hours=2))
     now = dt.datetime(2026, 3, 7, 0, 1, tzinfo=tz)  # billing day example
-    ut.monthly_events(now)
+    ut.monthly_events()
 
     with sqlite3.connect(usage_db) as con:
         row = con.execute(

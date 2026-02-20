@@ -2103,6 +2103,54 @@ def fetch_monthly_bytes_usage(username, db_path=None):
         con.close()
 
 
+def fetch_high_speed_quota_for_group_usage(group_name, db_path=None):
+    db_path = db_path or sqlh.USAGE_TRACKING_DB_PATH
+    if not sqlh.check_if_table_exists(
+        GROUP_TABLE_NAME, sqlh.USAGE_TRACKING_DB_PATH
+    ) or sqlh.check_if_table_empty(GROUP_TABLE_NAME, sqlh.USAGE_TRACKING_DB_PATH):
+        log.debug(
+            f"fetch_max_daily_usage: Table {GROUP_TABLE_NAME} empty or does not exist."
+        )
+        return 0
+
+    table_empty = sqlh.check_if_table_empty(GROUP_TABLE_NAME, db_path)
+
+    if table_empty:
+        log.error(
+            f"Failed fetching quota_bytes for group {group_name}: no groups exist."
+        )
+        raise GroupMissingError(f"No groups exist.")
+
+    con = sqlite3.connect(
+        db_path, timeout=30, isolation_level=None
+    )  # Connects to database
+    cur = con.cursor()
+
+    cur.execute(
+        """
+    SELECT high_speed_quota
+    FROM groups
+    WHERE group_name = ?
+    """,
+        (group_name,),
+    )
+
+    quota_bytes = cur.fetchone()
+
+    con.commit()
+    con.close()
+
+    if quota_bytes is None:
+        log.error(
+            f"ERROR: Operation to fetch high speed data quota failed for group {group_name}."
+        )
+        raise GroupNameError(
+            f"Quota bytes undefined for group {group_name}: group quota status indeterminate."
+        )
+
+    return quota_bytes[0]
+
+
 def fetch_high_speed_quota_for_user_usage(username, db_path=None):
     db_path = db_path or sqlh.USAGE_TRACKING_DB_PATH
 

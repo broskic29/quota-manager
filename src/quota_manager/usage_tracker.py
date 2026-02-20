@@ -196,6 +196,9 @@ def usage_updater(stop_event: threading.Event):
                 if quota_lock_acquired:
                     qm.QUOTA_LOCK.release()
                     log.debug(f"usage_updater: Released QUOTA_LOCK")
+        except Exception as e:
+            log.error(f"usage_updater: Failed to execute usage update, error: {e}")
+            stop_event.set()
         finally:
             if reset_lock_acquired:
                 qm.RESET_LOCK.release()

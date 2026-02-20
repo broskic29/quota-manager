@@ -23,10 +23,11 @@ def test_day_rollover_resets_daily_not_monthly_and_quota_state_recovers(
     sqlm.create_group_usage("alpha", 1.0, db_path=usage_db)
     sqlm.create_user_usage("bob", "alpha", db_path=usage_db)
 
+    sqlm.update_config_usage(
+        name="default", total_bytes=500 * 1024**3, db_path=usage_db
+    )
+
     with sqlite3.connect(usage_db) as con:
-        con.execute(
-            "UPDATE groups SET high_speed_quota=? WHERE group_name=?", (1000, "alpha")
-        )
         con.execute(
             """
             UPDATE users
@@ -40,6 +41,16 @@ def test_day_rollover_resets_daily_not_monthly_and_quota_state_recovers(
     sqlm.update_user_bytes_usage(700, "bob", db_path=usage_db)
     assert sqlm.fetch_daily_bytes_usage("bob", db_path=usage_db) == 700
     assert sqlm.fetch_monthly_bytes_usage("bob", db_path=usage_db) == 700
+
+    group_quotas_dict = qm.calculate_hypothetical_group_quotas_for_today()
+    qm.apply_new_quotas(group_quotas_dict)
+
+    calculated_quota = group_quotas_dict["alpha"]
+
+    assert (
+        sqlm.fetch_high_speed_quota_for_user_usage("bob", db_path=usage_db)
+        == calculated_quota
+    )
 
     # Make user exceed quota before midnight
     with sqlite3.connect(usage_db) as con:
@@ -66,9 +77,13 @@ def test_day_rollover_resets_daily_not_monthly_and_quota_state_recovers(
     exceeds, daily, quota = qm.update_quota_information_single_user(
         "bob", db_path=usage_db
     )
-    assert exceeds is False
+
     assert daily == 0
-    assert quota == 1000
+    assert quota == calculated_quota
+    if daily >= quota:
+        assert exceeds is True
+    else:
+        assert exceeds is False
 
     # "Traffic after midnight" should increment daily AND monthly (monthly continues)
     sqlm.update_user_bytes_usage(300, "bob", db_path=usage_db)

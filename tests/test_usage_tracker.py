@@ -13,7 +13,19 @@ def test_daily_events_runs_expected_calls(db_paths, monkeypatch):
     import quota_manager.usage_tracker as ut
     import quota_manager.quota_management as qm
 
-    called = {"logout_all": 0, "wipe_ip": 0, "reset": 0, "updateq": 0}
+    called = {
+        "usage_dw": 0,
+        "logout_all": 0,
+        "wipe_ip": 0,
+        "reset": 0,
+        "calculate_hyp": 0,
+        "applyq": 0,
+    }
+    monkeypatch.setattr(
+        sqlm,
+        "usage_daily_wipe",
+        lambda *a, **k: called.__setitem__("usage_dw", called["usage_dw"] + 1),
+    )
     monkeypatch.setattr(
         qm,
         "log_out_all_users",
@@ -31,8 +43,15 @@ def test_daily_events_runs_expected_calls(db_paths, monkeypatch):
     )
     monkeypatch.setattr(
         qm,
-        "update_group_quotas",
-        lambda *a, **k: called.__setitem__("updateq", called["updateq"] + 1),
+        "calculate_hypothetical_group_quotas_for_today",
+        lambda *a, **k: called.__setitem__(
+            "calculate_hyp", called["calculate_hyp"] + 1
+        ),
+    )
+    monkeypatch.setattr(
+        qm,
+        "apply_new_quotas",
+        lambda *a, **k: called.__setitem__("applyq", called["applyq"] + 1),
     )
 
     tz = dt.timezone(dt.timedelta(hours=2))
@@ -40,7 +59,9 @@ def test_daily_events_runs_expected_calls(db_paths, monkeypatch):
 
     ut.daily_events(now=now)
 
+    assert called["usage_dw"] == 1
     assert called["logout_all"] == 1
     assert called["wipe_ip"] == 1
     assert called["reset"] == 1
-    assert called["updateq"] == 1
+    assert called["calculate_hyp"] == 1
+    assert called["applyq"] == 1

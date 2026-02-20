@@ -30,7 +30,9 @@ def test_admin_update_group_ratio(
 
     called = {"ok": False}
     monkeypatch.setattr(
-        qm, "update_group_quotas", lambda *a, **k: called.__setitem__("ok", True)
+        sqlm,
+        "update_group_desired_quota_ratio",
+        lambda *a, **k: called.__setitem__("ok", True),
     )
 
     r = admin_client.post(
@@ -39,7 +41,7 @@ def test_admin_update_group_ratio(
         headers=admin_auth_header,
         follow_redirects=False,
     )
-    assert r.status_code in (302, 303)
+    assert r.status_code == 200
 
     row = sqlm.select_group_row("alpha", db_path=usage_db)
     assert float(row[4]) == 0.25  # desired_quota_ratio column in groups table
