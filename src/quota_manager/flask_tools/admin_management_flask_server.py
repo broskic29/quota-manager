@@ -44,150 +44,209 @@ def admin_home():
 @admin_management_app.route("/admin/new_user", methods=["GET", "POST"])
 @flu.require_admin_auth
 def create_user():
-    try:
-        flu.acquire_or_busy(qm.QUOTA_LOCK, timeout=1.0)
-        try:
-            error = None
-            existing_groups = []
 
-            existing_groups, error = flu.safe_call(
-                sqlm.get_groups_usage,
-                error,
-                None,
+    error = None
+    existing_groups = []
+
+    existing_groups, error = flu.safe_call(
+        sqlm.get_groups_usage,
+        error,
+        None,
+    )
+
+    if error:
+        return render_template_string(
+            ahtml.new_user_form, groups=existing_groups, error=error
+        )
+
+    if request.method == "POST":
+        data = request.form
+        username = data.get("username")
+        group_name = data.get("group_name")
+
+        error = flu.error_appender(error, flu.validate_name(username, "Username"))
+
+        error = flu.error_appender(error, flu.validate_name(group_name, "Group Name"))
+        if error:
+            return render_template_string(
+                ahtml.new_user_form, groups=existing_groups, error=error
             )
 
-            if error:
-                return render_template_string(
-                    ahtml.new_user_form, groups=existing_groups, error=error
+        USER_CREATION_ERROR_MESSAGES = {
+            sqlm.UserNameError: f"Failed to create user {username}: User already exists.\n",
+            sqlm.GroupNameError: f"Failed inserting user {username} into group {group_name}: No group by name {group_name} exists.\n",
+            IntegrityError: f"Failed to create user {username}: User already exists.\n",
+            qm.QuotaAllottmentError: None,
+            qm.RestrictedDayError: None,
+            flu.UndefinedException: f"Internal error creating user {username}. Please reload page.\n",
+        }
+
+        group_quotas, error = flu.safe_call(
+            qm.calculate_hypothetical_group_quotas_for_today,
+            error,
+            USER_CREATION_ERROR_MESSAGES,
+            group_name=group_name,
+            reset_day=qm.ACCOUNT_BILLING_DAY,
+        )
+
+        if error:
+            return render_template_string(
+                ahtml.new_user_form, groups=existing_groups, error=error
+            )
+
+        log.debug(f"Hypothetical quota available for groups: {group_quotas}")
+
+        try:
+            flu.acquire_or_busy(qm.QUOTA_LOCK, timeout=1.0)
+            log.debug(f"create_user: Acquired QUOTA_LOCK")
+            try:
+                _, error = flu.safe_call(
+                    qm.apply_new_quotas,
+                    error,
+                    USER_CREATION_ERROR_MESSAGES,
+                    group_quotas,
                 )
 
-            if request.method == "POST":
-                data = request.form
-                username = data.get("username")
-                group_name = data.get("group_name")
+            finally:
+                qm.QUOTA_LOCK.release()
+                log.debug(f"create_user: Released QUOTA_LOCK")
 
-                error = flu.error_appender(
-                    error, flu.validate_name(username, "Username")
+                if error:
+                    return render_template_string(ahtml.success_page, message=error)
+
+                log.debug(f"Updated quotas for all groups:")
+                sqlh.log_all_table_information(sqlm.GROUP_TABLE_NAME)
+
+        except Exception as e:
+            return render_template_string(ahtml.success_page, message=str(e))
+
+        try:
+            flu.acquire_or_busy(qm.USER_LOCKS[username], timeout=1.0)
+            log.debug(f"create_user: Acquired USER_LOCK for {username}")
+            try:
+                _, error = flu.safe_call(
+                    qm.create_user,
+                    error,
+                    USER_CREATION_ERROR_MESSAGES,
+                    username,
+                    DEFAULT_PASSWORD,
+                    group_name,
                 )
 
-                error = flu.error_appender(
-                    error, flu.validate_name(group_name, "Group Name")
-                )
                 if error:
                     return render_template_string(
                         ahtml.new_user_form, groups=existing_groups, error=error
                     )
 
-                USER_CREATION_ERROR_MESSAGES = {
-                    sqlm.UserNameError: f"Failed to create user {username}: User already exists.\n",
-                    sqlm.GroupNameError: f"Failed inserting user {username} into group {group_name}: No group by name {group_name} exists.\n",
-                    IntegrityError: f"Failed to create user {username}: User already exists.\n",
-                    qm.QuotaAllottmentError: None,
-                    qm.RestrictedDayError: None,
-                    flu.UndefinedException: f"Internal error creating user {username}. Please reload page.\n",
-                }
-
-                try:
-                    flu.acquire_or_busy(qm.USER_LOCKS[username], timeout=1.0)
-                    try:
-                        _, error = flu.safe_call(
-                            qm.create_user,
-                            error,
-                            USER_CREATION_ERROR_MESSAGES,
-                            username,
-                            DEFAULT_PASSWORD,
-                            group_name,
-                        )
-
-                        if error:
-                            return render_template_string(
-                                ahtml.new_user_form, groups=existing_groups, error=error
-                            )
-
-                        log.info(
-                            f"Succesfully created user {username} and assigned to group {group_name}."
-                        )
-                        return render_template_string(
-                            ahtml.success_page, message="User creation successul!"
-                        )
-                    finally:
-                        qm.USER_LOCKS[username].release()
-                except Exception as e:
-                    return render_template_string(ahtml.success_page, message=str(e))
-            return render_template_string(
-                ahtml.new_user_form, groups=existing_groups, error=error
-            )
-        finally:
-            qm.QUOTA_LOCK.release()
-    except Exception as e:
-        return render_template_string(ahtml.success_page, message=str(e))
+                log.info(
+                    f"Succesfully created user {username} and assigned to group {group_name}."
+                )
+                return render_template_string(
+                    ahtml.success_page, message="User creation successul!"
+                )
+            finally:
+                qm.USER_LOCKS[username].release()
+                log.debug(f"create_user: Released USER_LOCK for {username}")
+        except Exception as e:
+            return render_template_string(ahtml.success_page, message=str(e))
+    return render_template_string(
+        ahtml.new_user_form, groups=existing_groups, error=error
+    )
 
 
 @admin_management_app.route("/admin/new_group", methods=["GET", "POST"])
 @flu.require_admin_auth
 def create_group():
 
-    try:
-        flu.acquire_or_busy(qm.QUOTA_LOCK, timeout=1.0)
-        try:
-            error = None
-            if request.method == "POST":
-                data = request.form
-                group_name = data.get("group_name")
-                desired_quota_ratio = float(request.form.get("desired_quota_ratio"))
+    error = None
+    if request.method == "POST":
+        data = request.form
+        group_name = data.get("group_name")
+        desired_quota_ratio = float(request.form.get("desired_quota_ratio"))
 
-                error = flu.error_appender(
-                    error, flu.validate_name(group_name, "Group name")
-                )
+        error = flu.error_appender(error, flu.validate_name(group_name, "Group name"))
 
-                GROUP_CREATION_ERROR_MESSAGES = {
-                    IntegrityError: f"Failed to create group {group_name}: Group already exists.\n",
-                    ValueError: None,
-                    qm.QuotaAllottmentError: None,
-                    flu.UndefinedException: f"Internal error creating user {group_name}. Please reload page.\n",
-                }
+        GROUP_CREATION_ERROR_MESSAGES = {
+            IntegrityError: f"Failed to create group {group_name}: Group already exists.\n",
+            ValueError: None,
+            qm.QuotaAllottmentError: None,
+            flu.UndefinedException: f"Internal error creating user {group_name}. Please reload page.\n",
+        }
 
-                quota_ratio_legal, error = flu.safe_call(
-                    qm.check_quota_ratio_legality,
-                    error,
-                    GROUP_CREATION_ERROR_MESSAGES,
-                    desired_quota_ratio,
-                )
+        quota_ratio_legal, error = flu.safe_call(
+            qm.check_quota_ratio_legality,
+            error,
+            GROUP_CREATION_ERROR_MESSAGES,
+            desired_quota_ratio,
+        )
 
-                if error:
-                    return render_template_string(
-                        ahtml.new_group_form,
-                        error=error,
-                    )
-
-                if quota_ratio_legal:
-                    _, error = flu.safe_call(
-                        sqlm.create_group_usage,
-                        error,
-                        GROUP_CREATION_ERROR_MESSAGES,
-                        group_name,
-                        desired_quota_ratio,
-                    )
-
-                    if error:
-                        return render_template_string(
-                            ahtml.new_group_form,
-                            error=error,
-                        )
-
-                    log.info(f"Succesfully created group {group_name}.")
-                    return render_template_string(
-                        ahtml.success_page, message="Group creation successul!"
-                    )
-
+        if error:
             return render_template_string(
                 ahtml.new_group_form,
                 error=error,
             )
-        finally:
-            qm.QUOTA_LOCK.release()
-    except Exception as e:
-        return render_template_string(ahtml.success_page, message=str(e))
+
+        if quota_ratio_legal:
+            _, error = flu.safe_call(
+                sqlm.create_group_usage,
+                error,
+                GROUP_CREATION_ERROR_MESSAGES,
+                group_name,
+                desired_quota_ratio,
+            )
+
+            msg = f"Succesfully created group {group_name}."
+
+            if error:
+                return render_template_string(
+                    ahtml.new_group_form,
+                    error=error,
+                )
+
+            group_quotas_dict, error = flu.safe_call(
+                qm.calculate_hypothetical_group_quotas_for_today,
+                error,
+                GROUP_CREATION_ERROR_MESSAGES,
+                reset_day=qm.ACCOUNT_BILLING_DAY,
+            )
+            if error:
+                return render_template_string(
+                    ahtml.success_page, message=msg + str(error)
+                )
+
+            try:
+                flu.acquire_or_busy(qm.QUOTA_LOCK, timeout=1.0)
+                log.debug(f"create_group: Acquired QUOTA_LOCK")
+                try:
+                    _, error = flu.safe_call(
+                        qm.apply_new_quotas,
+                        error,
+                        GROUP_CREATION_ERROR_MESSAGES,
+                        group_quotas_dict,
+                    )
+
+                    log.debug(f"Updated quotas for all groups:")
+                    sqlh.log_all_table_information(sqlm.GROUP_TABLE_NAME)
+
+                    if error:
+                        return render_template_string(
+                            ahtml.success_page, message=msg + str(error)
+                        )
+
+                    msg += f" Succesfully calculated new data quotas."
+                finally:
+                    qm.QUOTA_LOCK.release()
+                    log.debug(f"create_group: Released QUOTA_LOCK")
+            except Exception as e:
+                return render_template_string(ahtml.success_page, message=str(e))
+
+            log.info(msg)
+            return render_template_string(ahtml.success_page, message=msg)
+
+    return render_template_string(
+        ahtml.new_group_form,
+        error=error,
+    )
 
 
 @admin_management_app.route("/admin/users")
@@ -209,88 +268,120 @@ def manage_users():
 @flu.require_admin_auth
 def change_user_group(username):
 
+    flu.acquire_or_busy(qm.USER_LOCKS[username], timeout=1.0)
+    log.debug(f"change_user_group: Acquired USER_LOCK for {username}")
     try:
-        flu.acquire_or_busy(qm.QUOTA_LOCK, timeout=1.0)
-        try:
-            flu.acquire_or_busy(qm.USER_LOCKS[username], timeout=1.0)
-            try:
-                error = None
+        error = None
 
-                users = sqlm.fetch_all_usernames_usage()
+        users = sqlm.fetch_all_usernames_usage()
 
-                existing_groups = []
+        existing_groups = []
 
-                existing_groups, error = flu.safe_call(
-                    sqlm.get_groups_usage,
-                    error,
-                    None,
-                )
+        existing_groups, error = flu.safe_call(
+            sqlm.get_groups_usage,
+            error,
+            None,
+        )
 
-                if error:
-                    return render_template_string(
-                        ahtml.new_user_form, groups=existing_groups, error=error
-                    )
+        if error:
+            return render_template_string(
+                ahtml.new_user_form, groups=existing_groups, error=error
+            )
 
-                if request.method == "POST":
-                    data = request.form
-                    new_group_name = data.get("group_name")
+        if request.method == "POST":
+            data = request.form
+            new_group_name = data.get("group_name")
 
-                    GROUP_CHANGE_ERROR_MESSAGES = {
-                        sqlm.UserNameError: None,
-                        sqlm.GroupNameError: None,
-                        qm.QuotaAllottmentError: None,
-                        flu.UndefinedException: f"Internal error changing group for user {username}. Please reload page.\n",
-                    }
+            GROUP_CHANGE_ERROR_MESSAGES = {
+                sqlm.UserNameError: None,
+                sqlm.GroupNameError: None,
+                qm.QuotaAllottmentError: None,
+                flu.UndefinedException: f"Internal error changing group for user {username}. Please reload page.\n",
+            }
 
-                    old_group_name, error = flu.safe_call(
-                        sqlm.check_which_group_user_is_in,
-                        error,
-                        GROUP_CHANGE_ERROR_MESSAGES,
-                        username,
-                    )
+            old_group_name, error = flu.safe_call(
+                sqlm.check_which_group_user_is_in,
+                error,
+                GROUP_CHANGE_ERROR_MESSAGES,
+                username,
+            )
 
-                    if error:
-                        return render_template_string(
-                            ahtml.manage_users_page,
-                            users=users or [],
-                            groups=existing_groups or [],
-                        )
-
-                    _, error = flu.safe_call(
-                        qm.change_user_group,
-                        error,
-                        GROUP_CHANGE_ERROR_MESSAGES,
-                        username,
-                        new_group_name,
-                        old_group_name,
-                    )
-
-                    if error:
-                        return render_template_string(
-                            ahtml.manage_users_page,
-                            users=users or [],
-                            groups=existing_groups or [],
-                        )
-
-                    log.info(
-                        f"Succesfully assigned {username} to group {new_group_name}."
-                    )
-                    return render_template_string(
-                        ahtml.success_page,
-                        message=f"Succesfully assigned {username} to group {new_group_name}.",
-                    )
-
+            if error:
                 return render_template_string(
                     ahtml.manage_users_page,
                     users=users or [],
                     groups=existing_groups or [],
+                    error=error,
                 )
-            finally:
-                qm.USER_LOCKS[username].release()
-        finally:
-            qm.QUOTA_LOCK.release()
-    except Exception as e:
-        return render_template_string(ahtml.success_page, message=str(e))
+
+            _, error = flu.safe_call(
+                qm.change_user_group,
+                error,
+                GROUP_CHANGE_ERROR_MESSAGES,
+                username,
+                new_group_name,
+                old_group_name,
+            )
+
+            group_quotas_dict, error = flu.safe_call(
+                qm.calculate_hypothetical_group_quotas_for_today,
+                error,
+                GROUP_CHANGE_ERROR_MESSAGES,
+                group_name=new_group_name,
+                reset_day=qm.ACCOUNT_BILLING_DAY,
+                old_group_name=old_group_name,
+            )
+
+            if error:
+                return render_template_string(
+                    ahtml.manage_users_page,
+                    users=users or [],
+                    groups=existing_groups or [],
+                    error=error,
+                )
+
+            try:
+                flu.acquire_or_busy(qm.QUOTA_LOCK, timeout=1.0)
+                log.debug(f"change_user_group: Acquired QUOTA_LOCK")
+                try:
+                    _, error = flu.safe_call(
+                        qm.apply_new_quotas,
+                        error,
+                        GROUP_CHANGE_ERROR_MESSAGES,
+                        group_quotas_dict,
+                    )
+
+                    log.debug(f"Updated quotas for all groups:")
+                    sqlh.log_all_table_information(sqlm.GROUP_TABLE_NAME)
+
+                    if error:
+                        return render_template_string(
+                            ahtml.manage_users_page,
+                            users=users or [],
+                            groups=existing_groups or [],
+                            error=error,
+                        )
+
+                finally:
+                    qm.QUOTA_LOCK.release()
+                    log.debug(f"change_user_group: Released QUOTA_LOCK")
+            except Exception as e:
+                return render_template_string(ahtml.success_page, message=str(e))
+
+            log.info(f"Succesfully assigned {username} to group {new_group_name}.")
+            return render_template_string(
+                ahtml.success_page,
+                message=f"Succesfully assigned {username} to group {new_group_name}.",
+            )
+
+        return render_template_string(
+            ahtml.manage_users_page,
+            users=users or [],
+            groups=existing_groups or [],
+        )
+    finally:
+        qm.USER_LOCKS[username].release()
+        log.debug(f"change_user_group: Released USER_LOCK for {username}")
 
 
 @admin_management_app.route("/admin/users/<username>/delete", methods=["POST"])
@@ -298,30 +389,77 @@ def change_user_group(username):
 def delete_user(username):
 
     try:
-        flu.acquire_or_busy(qm.QUOTA_LOCK, timeout=1.0)
+        flu.acquire_or_busy(qm.USER_LOCKS[username], timeout=1.0)
+        log.debug(f"delete_user: Acquired USER_LOCK for {username}")
         try:
-            flu.acquire_or_busy(qm.USER_LOCKS[username], timeout=1.0)
+            error = None
+            USER_DELETE_ERROR_MESSAGES = {
+                sqlm.UserNameError: f"User {username} does not exist.\n",
+                flu.UndefinedException: f"Internal error deleting user {username}.\n",
+            }
+
+            old_group_name, error = flu.safe_call(
+                sqlm.check_which_group_user_is_in,
+                error,
+                USER_DELETE_ERROR_MESSAGES,
+                username,
+            )
+
+            if error:
+                return render_template_string(ahtml.success_page, message=error)
+
+            _, error = flu.safe_call(
+                qm.delete_user_from_system,
+                error,
+                USER_DELETE_ERROR_MESSAGES,
+                username,
+            )
+
+            if error:
+                return render_template_string(ahtml.success_page, message=error)
+
+            group_quotas_dict, error = flu.safe_call(
+                qm.calculate_hypothetical_group_quotas_for_today,
+                error,
+                USER_DELETE_ERROR_MESSAGES,
+                reset_day=qm.ACCOUNT_BILLING_DAY,
+                old_group_name=old_group_name,
+            )
+
+            if error:
+                return render_template_string(ahtml.success_page, message=error)
+
             try:
-                error = None
-                USER_DELETE_ERROR_MESSAGES = {
-                    sqlm.UserNameError: f"User {username} does not exist.\n",
-                    flu.UndefinedException: f"Internal error deleting user {username}.\n",
-                }
-                _, error = flu.safe_call(
-                    qm.delete_user_from_system,
-                    error,
-                    USER_DELETE_ERROR_MESSAGES,
-                    username,
-                )
-                if error:
-                    return render_template_string(ahtml.success_page, message=error)
-                return render_template_string(
-                    ahtml.success_page, message=f"Deleted user {username}."
-                )
-            finally:
-                qm.USER_LOCKS[username].release()
+                flu.acquire_or_busy(qm.QUOTA_LOCK, timeout=1.0)
+                log.debug(f"delete_user: Acquired QUOTA_LOCK")
+                try:
+                    _, error = flu.safe_call(
+                        qm.apply_new_quotas,
+                        error,
+                        USER_DELETE_ERROR_MESSAGES,
+                        group_quotas_dict,
+                    )
+
+                    log.debug(f"Updated quotas for all groups:")
+                    sqlh.log_all_table_information(sqlm.GROUP_TABLE_NAME)
+
+                    if error:
+                        return render_template_string(ahtml.success_page, message=error)
+
+                finally:
+                    qm.QUOTA_LOCK.release()
+                    log.debug(f"delete_user: Released QUOTA_LOCK")
+            except Exception as e:
+                return render_template_string(ahtml.success_page, message=str(e))
+
+            if error:
+                return render_template_string(ahtml.success_page, message=error)
+            return render_template_string(
+                ahtml.success_page, message=f"Deleted user {username}."
+            )
         finally:
-            qm.QUOTA_LOCK.release()
+            qm.USER_LOCKS[username].release()
+            log.debug(f"delete_user: Released USER_LOCK for {username}")
     except Exception as e:
         return render_template_string(ahtml.success_page, message=str(e))
 
@@ -347,61 +485,61 @@ def manage_groups():
 @flu.require_admin_auth
 def update_group_ratio(group_name):
 
+    error = None
+    try:
+        desired_quota_ratio = float(request.form.get("desired_quota_ratio"))
+    except Exception:
+        return render_template_string(ahtml.success_page, message="Invalid ratio.")
+
+    # validate legality using your existing check
+    GROUP_UPDATE_ERROR_MESSAGES = {
+        ValueError: None,
+        qm.QuotaAllottmentError: None,
+        sqt.QuotaConfigError: None,
+        flu.UndefinedException: "Internal error updating group ratio.\n",
+    }
+
+    # Problem: If ratios already = 1, then lowering is incorrectly calculating legality as if you
+    # were adding the lowered ratio to the ratios that already sum to 1. Need to
+    # fix.
+    _, error = flu.safe_call(
+        qm.check_quota_ratio_legality,
+        error,
+        GROUP_UPDATE_ERROR_MESSAGES,
+        desired_quota_ratio,
+        group_name,
+    )
+    if error:
+        return render_template_string(ahtml.success_page, message=error)
+
+    group_quotas_dict, error = flu.safe_call(
+        sqlm.update_group_desired_quota_ratio,
+        error,
+        GROUP_UPDATE_ERROR_MESSAGES,
+        group_name,
+        desired_quota_ratio,
+    )
+    if error:
+        return render_template_string(ahtml.success_page, message=error)
+
+    msg = (
+        f"Successfully updated quota ratio for {group_name} to {desired_quota_ratio}.\n"
+    )
+
+    group_quotas_dict, error = flu.safe_call(
+        qm.calculate_hypothetical_group_quotas_for_today,
+        error,
+        GROUP_UPDATE_ERROR_MESSAGES,
+        reset_day=qm.ACCOUNT_BILLING_DAY,
+    )
+
+    if error:
+        return render_template_string(ahtml.success_page, message=msg + str(error))
+
     try:
         flu.acquire_or_busy(qm.QUOTA_LOCK, timeout=1.0)
+        log.debug(f"update_group_ratio: Acquired QUOTA_LOCK")
         try:
-            error = None
-            try:
-                desired_quota_ratio = float(request.form.get("desired_quota_ratio"))
-            except Exception:
-                return render_template_string(
-                    ahtml.success_page, message="Invalid ratio."
-                )
-
-            # validate legality using your existing check
-            GROUP_UPDATE_ERROR_MESSAGES = {
-                ValueError: None,
-                qm.QuotaAllottmentError: None,
-                sqt.QuotaConfigError: None,
-                flu.UndefinedException: "Internal error updating group ratio.\n",
-            }
-
-            # Problem: If ratios already = 1, then lowering is incorrectly calculating legality as if you
-            # were adding the lowered ratio to the ratios that already sum to 1. Need to
-            # fix.
-            _, error = flu.safe_call(
-                qm.check_quota_ratio_legality,
-                error,
-                GROUP_UPDATE_ERROR_MESSAGES,
-                desired_quota_ratio,
-                group_name,
-            )
-            if error:
-                return render_template_string(ahtml.success_page, message=error)
-
-            group_quotas_dict, error = flu.safe_call(
-                sqlm.update_group_desired_quota_ratio,
-                error,
-                GROUP_UPDATE_ERROR_MESSAGES,
-                group_name,
-                desired_quota_ratio,
-            )
-            if error:
-                return render_template_string(ahtml.success_page, message=error)
-
-            msg = f"Successfully updated quota ratio for {group_name} to {desired_quota_ratio}.\n"
-
-            group_quotas_dict, error = flu.safe_call(
-                qm.calculate_hypothetical_group_quotas_for_today,
-                error,
-                GROUP_UPDATE_ERROR_MESSAGES,
-                reset_day=qm.ACCOUNT_BILLING_DAY,
-            )
-            if error:
-                return render_template_string(
-                    ahtml.success_page, message=msg + str(error)
-                )
-
             _, error = flu.safe_call(
                 qm.apply_new_quotas,
                 error,
@@ -409,45 +547,91 @@ def update_group_ratio(group_name):
                 group_quotas_dict,
             )
 
+            log.debug(f"Updated quotas for all groups:")
+            sqlh.log_all_table_information(sqlm.GROUP_TABLE_NAME)
+
             if error:
                 return render_template_string(
                     ahtml.success_page, message=msg + str(error)
                 )
 
-            return render_template_string(
-                ahtml.success_page,
-                message=f"Successfully applied quota ratio for {group_name} to {desired_quota_ratio}.\n",
-            )
         finally:
             qm.QUOTA_LOCK.release()
+            log.debug(f"delete_user: Released QUOTA_LOCK")
     except Exception as e:
-        return render_template_string(ahtml.success_page, message=str(e))
+        return render_template_string(ahtml.success_page, message=msg + str(e))
+
+    return render_template_string(
+        ahtml.success_page,
+        message=f"Successfully applied quota ratio for {group_name} to {desired_quota_ratio}.\n",
+    )
 
 
 @admin_management_app.route("/admin/groups/<group_name>/delete", methods=["POST"])
 @flu.require_admin_auth
 def delete_group(group_name):
+    # validate legality using your existing check
+    GROUP_DELETE_ERROR_MESSAGES = {
+        ValueError: None,
+        qm.QuotaAllottmentError: None,
+        sqt.QuotaConfigError: None,
+        flu.UndefinedException: "Internal error updating group ratio.\n",
+    }
+
+    members = sqlm.count_users_in_group(group_name)
+    if members > 0:
+        return render_template_string(
+            ahtml.success_page,
+            message=f"Cannot delete group '{group_name}' because it has {members} users.",
+        )
+
+    _, error = flu.safe_call(
+        qm.delete_group_from_systems,
+        error,
+        GROUP_DELETE_ERROR_MESSAGES,
+        group_name,
+    )
+
+    group_quotas_dict, error = flu.safe_call(
+        qm.calculate_hypothetical_group_quotas_for_today,
+        error,
+        GROUP_DELETE_ERROR_MESSAGES,
+        reset_day=qm.ACCOUNT_BILLING_DAY,
+    )
+
+    if error:
+        return render_template_string(ahtml.success_page, message=error)
 
     try:
         flu.acquire_or_busy(qm.QUOTA_LOCK, timeout=1.0)
+        log.debug(f"delete_group: Acquired QUOTA_LOCK")
         try:
-            members = sqlm.count_users_in_group(group_name)
-            if members > 0:
-                return render_template_string(
-                    ahtml.success_page,
-                    message=f"Cannot delete group '{group_name}' because it has {members} users.",
-                )
-
-            qm.delete_group_from_system(group_name)
-
-            return render_template_string(
-                ahtml.success_page,
-                message=f"Successfully deleted group '{group_name}'.",
+            _, error = flu.safe_call(
+                qm.apply_new_quotas,
+                error,
+                GROUP_DELETE_ERROR_MESSAGES,
+                group_quotas_dict,
             )
+
+            log.debug(f"Updated quotas for all groups:")
+            sqlh.log_all_table_information(sqlm.GROUP_TABLE_NAME)
+
+            if error:
+                return render_template_string(ahtml.success_page, message=error)
+
         finally:
             qm.QUOTA_LOCK.release()
+            log.debug(f"delete_group: Released QUOTA_LOCK")
     except Exception as e:
         return render_template_string(ahtml.success_page, message=str(e))
+
+    if error:
+        return render_template_string(ahtml.success_page, message=error)
+
+    return render_template_string(
+        ahtml.success_page,
+        message=f"Successfully deleted group '{group_name}'.",
+    )
 
 
 @admin_management_app.route("/admin/config", methods=["GET", "POST"])
@@ -508,22 +692,32 @@ def admin_config():
                 CONFIG_ERROR_MESSAGES,
                 reset_day=qm.ACCOUNT_BILLING_DAY,
             )
-            if error:
-                return render_template_string(
-                    ahtml.success_page, message=msg + str(error)
-                )
-
-            _, error = flu.safe_call(
-                qm.apply_new_quotas,
-                error,
-                CONFIG_ERROR_MESSAGES,
-                group_quotas_dict,
-            )
 
             if error:
-                return render_template_string(
-                    ahtml.success_page, message=msg + str(error)
-                )
+                return render_template_string(ahtml.success_page, message=error)
+
+            try:
+                flu.acquire_or_busy(qm.QUOTA_LOCK, timeout=1.0)
+                log.debug(f"admin_config: Acquired QUOTA_LOCK")
+                try:
+                    _, error = flu.safe_call(
+                        qm.apply_new_quotas,
+                        error,
+                        CONFIG_ERROR_MESSAGES,
+                        group_quotas_dict,
+                    )
+
+                    log.debug(f"Updated quotas for all groups:")
+                    sqlh.log_all_table_information(sqlm.GROUP_TABLE_NAME)
+
+                    if error:
+                        return render_template_string(ahtml.success_page, message=error)
+
+                finally:
+                    qm.QUOTA_LOCK.release()
+                    log.debug(f"admin_config: Released QUOTA_LOCK")
+            except Exception as e:
+                return render_template_string(ahtml.success_page, message=str(e))
 
             msg = " Successfully applied new data quotas."
 
@@ -569,12 +763,20 @@ def admin_usage():
     )
     daily_used_bytes = float(sqlm.fetch_daily_usage_bytes() or 0.0)
 
-    daily_unit = flu.pick_unit(daily_budget_bytes or 0.0)
-    monthly_unit = flu.pick_unit(monthly_budget_bytes or 0.0)
+    daily_unit = flu.pick_unit(
+        max(float(daily_budget_bytes or 0.0), float(daily_used_bytes or 0.0))
+    )
+    monthly_unit = flu.pick_unit(
+        max(float(monthly_budget_bytes or 0.0), float(monthly_used_bytes or 0.0))
+    )
 
     users = sqlm.fetch_users_usage_rows() or []
 
     reset_str = reset_dt.strftime("%Y-%m-%d 00:00") if reset_dt else "-"
+
+    log.debug(
+        f"admin_usage: monthly_used_bytes: {monthly_used_bytes}, daily_used_bytes={daily_used_bytes}"
+    )
 
     return render_template_string(
         ahtml.admin_usage_template,
@@ -613,55 +815,12 @@ def admin_usage():
     )
 
 
-# @admin_management_app.route("/admin/usage", methods=["GET"])
-# @flu.require_admin_auth
-# def admin_usage():
-#     msg = session.pop("message", "")
-#     error = session.pop("error", "")
-
-#     tz = dt.timezone(dt.timedelta(hours=sqlh.UTC_OFFSET))
-#     now = dt.datetime.now(tz)
-
-#     billing_day = qm.ACCOUNT_BILLING_DAY
-#     reset_dt = qm.calculate_next_monthly_reset(now, billing_day)
-
-#     monthly_budget_bytes = float(sqlm.fetch_config_total_bytes() or 0)
-#     monthly_used_bytes = float(sqlm.fetch_monthly_usage_bytes() or 0)
-#     monthly_remaining_bytes = max(monthly_budget_bytes - monthly_used_bytes, 0.0)
-
-#     active_days_left = qm.compute_remaining_weekdays(now, reset_dt.day)
-#     daily_budget_bytes = (
-#         monthly_remaining_bytes / active_days_left if active_days_left > 0 else 0.0
-#     )
-#     daily_used_bytes = float(sqlm.fetch_daily_usage_bytes() or 0)
-
-#     daily_unit = flu.pick_unit(daily_budget_bytes)
-#     monthly_unit = flu.pick_unit(monthly_budget_bytes)
-
-#     users = sqlm.fetch_users_usage_rows()
-
-#     return render_template_string(
-#         ahtml.admin_usage_template,
-#         message=msg,
-#         error=error,
-#         users=users,
-#         billing_day=billing_day,
-#         reset_dt=reset_dt.strftime("%Y-%m-%d 00:00"),
-#         daily_unit=daily_unit,
-#         daily_used=flu.bytes_to_unit(daily_used_bytes, daily_unit),
-#         daily_budget=flu.bytes_to_unit(daily_budget_bytes, daily_unit),
-#         monthly_unit=monthly_unit,
-#         monthly_used=flu.bytes_to_unit(monthly_used_bytes, monthly_unit),
-#         monthly_budget=flu.bytes_to_unit(monthly_budget_bytes, monthly_unit),
-#         monthly_remaining=flu.bytes_to_unit(monthly_remaining_bytes, monthly_unit),
-#     )
-
-
 @admin_management_app.route("/admin/usage/<username>/drop", methods=["POST"])
 @flu.require_admin_auth
 def admin_drop_connectivity(username):
     try:
         flu.acquire_or_busy(qm.USER_LOCKS[username], timeout=1.0)
+        log.debug(f"admin_drop_connectivity: Acquired USER_LOCK for {username}")
         try:
             error = None
             msgs = {
@@ -680,6 +839,7 @@ def admin_drop_connectivity(username):
             return redirect(url_for("admin_usage"), 302)
         finally:
             qm.USER_LOCKS[username].release()
+            log.debug(f"admin_drop_connectivity: Released USER_LOCK for {username}")
     except Exception as e:
         return render_template_string(ahtml.success_page, message=str(e))
 
@@ -690,6 +850,7 @@ def reset_system():
 
     try:
         flu.acquire_or_busy(qm.RESET_LOCK, timeout=1.0)
+        log.debug(f"reset_system: Acquired RESET_LOCK")
         try:
             error = None
 
@@ -722,5 +883,6 @@ def reset_system():
             )
         finally:
             qm.RESET_LOCK.release()
+            log.debug(f"reset_system: Released RESET_LOCK")
     except Exception as e:
         return render_template_string(ahtml.success_page, message=str(e))

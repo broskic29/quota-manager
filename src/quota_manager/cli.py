@@ -41,6 +41,11 @@ def parse_args():
         help="",
     )
     parser.add_argument(
+        "--debug-smart-quota-tool",
+        action="store_true",
+        help="",
+    )
+    parser.add_argument(
         "--debug-nftables-management",
         action="store_true",
         help="",
@@ -71,9 +76,15 @@ def main():
     if args.debug_ip_neigh:
         module_levels["quota_manager.ip_neigh_timeout_listener"] = logging.DEBUG
     if args.debug_flask_user_login:
-        module_levels["quota_manager.user_login_flask_server"] = logging.DEBUG
+        module_levels["quota_manager.flask_tools.user_login_flask_server"] = (
+            logging.DEBUG
+        )
     if args.debug_flask_admin:
-        module_levels["quota_manager.admin_management_flask_server"] = logging.DEBUG
+        module_levels["quota_manager.flask_tools.admin_management_flask_server"] = (
+            logging.DEBUG
+        )
+    if args.debug_smart_quota_tool:
+        module_levels["quota_manager.quota_tools.smart_quota_tool"] = logging.DEBUG
     if args.debug_sql_management:
         module_levels["quota_manager.sql_management"] = logging.DEBUG
     if args.debug_quota_management:

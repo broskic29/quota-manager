@@ -582,10 +582,6 @@ def update_group_quota(group_name, quota_byte_value, db_path=None):
             """,
         (quota_byte_value, group_name),
     )
-    log.info(f"Group {group_name} quota successfully updated.")
-    sqlh.log_all_table_information(
-        GROUP_TABLE_NAME, db_path=sqlh.USAGE_TRACKING_DB_PATH
-    )
 
     con.commit()
     con.close()
@@ -1558,12 +1554,10 @@ def fetch_config_total_bytes(config_name="default", db_path=None):
     db_path = db_path or sqlh.USAGE_TRACKING_DB_PATH
 
     if not sqlh.check_if_table_exists(
-        USAGE_TRACKING_TABLE_NAME, sqlh.USAGE_TRACKING_DB_PATH
-    ) or sqlh.check_if_table_empty(
-        USAGE_TRACKING_TABLE_NAME, sqlh.USAGE_TRACKING_DB_PATH
-    ):
+        CONFIGS_TABLE_NAME, sqlh.USAGE_TRACKING_DB_PATH
+    ) or sqlh.check_if_table_empty(CONFIGS_TABLE_NAME, sqlh.USAGE_TRACKING_DB_PATH):
         log.debug(
-            f"fetch_config_total_bytes: Table {USAGE_TRACKING_TABLE_NAME} empty or does not exist."
+            f"fetch_config_total_bytes: Table {CONFIGS_TABLE_NAME} empty or does not exist."
         )
         return 0
     con = sqlite3.connect(db_path, timeout=30, isolation_level=None)
@@ -1773,6 +1767,16 @@ def update_user_bytes_usage(byte_delta, username, db_path=None):
     # Raise error if user doens't exist
     user_exists = check_if_user_exists(username)
 
+    cfg = fetch_active_config()
+    system_name = cfg.get("system_name")
+    if not system_name:
+        log.error(
+            "update_user_bytes_usage: Error, no active config. Unable to update system bytes."
+        )
+        raise ConfigNameError(
+            "update_user_bytes_usage: Error, no active config. Unable to update system bytes."
+        )
+
     if not user_exists:
         log.error(
             f"Failed fetching quota_bytes for user {username}: not found in users table."
@@ -1810,15 +1814,14 @@ def update_user_bytes_usage(byte_delta, username, db_path=None):
         UPDATE system_state
         SET total_daily_bytes = total_daily_bytes + ?,
             total_monthly_bytes = total_monthly_bytes + ?,
-            all_time_bytes = all_time_bytes + ?,
-        WHERE username = ?
+            all_time_bytes = all_time_bytes + ?
+        WHERE system_name = ?
         """,
         (
             byte_delta,
             byte_delta,
             byte_delta,
-            byte_delta,
-            username,
+            system_name,
         ),
     )
 
@@ -2296,7 +2299,7 @@ def check_if_user_exists(username, table_name=USAGE_TRACKING_TABLE_NAME, db_path
         (username,),
     )
     res = cur.fetchall()
-    log.debug(f"check_if_user_exists: {res}")
+    # log.debug(f"check_if_user_exists: {res}")
     con.close()
     if len(res) < 1:
         return False

@@ -615,6 +615,10 @@ manage_users_page = """
       <div class="empty">No users found.</div>
     {% endif %}
 
+    {% if error %}
+    <p class="error-message">{{ error }}</p>
+    {% endif %}
+
   </div>
 </body>
 </html>
@@ -1355,6 +1359,8 @@ admin_usage_template = """
               <td>{{ u.mac_address or "-" }}</td>
               <td>
                 <div class="actions">
+                  {# Dropping using the drop button is not currently working #}
+                  {#
                   {% if u.logged_in and u.ip_address %}
                     <form method="post" action="/admin/usage/{{ u.username }}/drop">
                       <button type="submit"
@@ -1365,6 +1371,9 @@ admin_usage_template = """
                   {% else %}
                     <span class="muted">—</span>
                   {% endif %}
+                  #}
+                  {# Just leave this here. #}
+                  <span class="muted">—</span>
                 </div>
               </td>
             </tr>

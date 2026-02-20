@@ -66,7 +66,7 @@ def event_scheduler(stop_event: threading.Event):
                 )
 
         try:
-            daily_events()
+            daily_events(now)
             qm.update_system_date(now)
         except Exception as e:
             log.debug(f"event_scheduler: Failed to execute daily events, error: {e}")
@@ -75,9 +75,11 @@ def event_scheduler(stop_event: threading.Event):
 def daily_events(now):
 
     if not qm.RESET_LOCK.acquire(blocking=False):
+        log.debug(f"daily_events: Acquired RESET_LOCK")
         return  # reset in progress, skip tick
     try:
         if not qm.QUOTA_LOCK.acquire(timeout=0.1):
+            log.debug(f"daily_events: Acquired QUOTA_LOCK")
             return  # admin is changing groups/quotas; skip tick
         try:
             sqlm.usage_daily_wipe()
@@ -97,8 +99,10 @@ def daily_events(now):
             log.error(f"daily_events: Failed to execute daily events, error: {e}")
         finally:
             qm.QUOTA_LOCK.release()
+            log.debug(f"daily_events: Released QUOTA_LOCK")
     finally:
         qm.RESET_LOCK.release()
+        log.debug(f"daily_events: Released RESET_LOCK")
 
 
 def monthly_events():
@@ -114,8 +118,10 @@ def monthly_events():
             log.error(f"monthly_events: Failed to execute daily events, error: {e}")
         finally:
             qm.QUOTA_LOCK.release()
+            log.debug(f"monthly_events: Released QUOTA_LOCK")
     finally:
         qm.RESET_LOCK.release()
+        log.debug(f"monthly_events: Released RESET_LOCK")
 
 
 def usage_updater(stop_event: threading.Event):
@@ -131,21 +137,26 @@ def usage_updater(stop_event: threading.Event):
         if stop_event.wait(USAGE_UPDATE_INTERVAL):
             break
 
-        if not qm.RESET_LOCK.acquire(blocking=False):
-            return  # reset in progress, skip tick
+        reset_lock_acquired = qm.RESET_LOCK.acquire(blocking=False)
+        if not reset_lock_acquired:
+            continue  # reset in progress, skip tick
+        log.debug(f"usage_updater: Acquired RESET_LOCK")
         try:
-            if not qm.QUOTA_LOCK.acquire(timeout=0.1):
-                return  # admin is changing groups/quotas; skip tick
+            quota_lock_acquired = qm.QUOTA_LOCK.acquire(timeout=0.1)
+            if not quota_lock_acquired:
+                continue  # admin is changing groups/quotas; skip tick
+            log.debug(f"usage_updater: Acquired QUOTA_LOCK")
             try:
                 tz = dt.timezone(dt.timedelta(hours=UTC_OFFSET))
                 now = dt.datetime.now(tz)
 
                 try:
                     system_daily_wiped = qm.system_daily_wipe_check(now)
+
                     if not system_daily_wiped:
                         log.debug("System not daily wiped, wiping system...")
 
-                        daily_events()
+                        daily_events(now)
                         qm.update_system_date(now)
 
                 except Exception as e:
@@ -174,16 +185,21 @@ def usage_updater(stop_event: threading.Event):
                 log.debug("Enforcing quotas for all users...")
                 qm.enforce_quotas_all_users(throttling=False)
 
+                log.debug("Updating num entities system state...")
                 num_users, num_groups = qm.update_num_entities_system_state(
                     num_users, num_groups
                 )
 
-            except Exception as e:
+            except qm.QuotaAllottmentError as e:
                 log.error(f"usage_updater: Failed to execute usage update, error: {e}")
             finally:
-                qm.QUOTA_LOCK.release()
+                if quota_lock_acquired:
+                    qm.QUOTA_LOCK.release()
+                    log.debug(f"usage_updater: Released QUOTA_LOCK")
         finally:
-            qm.RESET_LOCK.release()
+            if reset_lock_acquired:
+                qm.RESET_LOCK.release()
+                log.debug(f"usage_updater: Released RESET_LOCK")
 
 
 def start_usage_tracking(stop_event: threading.Event):

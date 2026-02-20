@@ -44,7 +44,7 @@ NAME_RE = re.compile(r"^[a-zA-Z0-9_.\-@+]{3,32}$")
 
 BYTE_BASE = 1024
 
-byte_unit_multipliers = {"MB": 1024**2, "GB": 1024**3}
+byte_unit_multipliers = {"B": 1, "KB": 1024, "MB": 1024**2, "GB": 1024**3}
 
 
 class UndefinedException(Exception):
@@ -194,7 +194,18 @@ def bytes_to_unit(value_bytes: float, unit: str) -> float:
 
 
 def pick_unit(total_bytes: float) -> str:
-    return "GB" if float(total_bytes) >= float(byte_unit_multipliers["GB"]) else "MB"
+
+    if float(total_bytes) >= float(byte_unit_multipliers["GB"]):
+        unit = "GB"
+    elif float(total_bytes) >= float(byte_unit_multipliers["MB"]):
+        unit = "MB"
+    elif float(total_bytes) >= float(byte_unit_multipliers["KB"]):
+        unit = "KB"
+    else:
+        unit = "B"
+
+    return unit
+    # return "GB" if float(total_bytes) >= float(byte_unit_multipliers["GB"]) else "MB"
 
 
 def acquire_or_busy(

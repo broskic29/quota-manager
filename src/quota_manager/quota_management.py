@@ -34,6 +34,8 @@ import threading
 RESET_LOCK = threading.RLock()
 QUOTA_LOCK = threading.RLock()
 
+QUOTAS_DIRTY = threading.Event()
+
 from collections import defaultdict
 
 USER_LOCKS = defaultdict(threading.RLock)
@@ -118,7 +120,7 @@ def fetch_user_bytes(username):
         log_out_user(username)
         return None
 
-    log.debug(f"User bytes: {user_bytes}")
+    # log.debug(f"User bytes: {user_bytes}")
 
     return user_bytes
 
@@ -158,10 +160,13 @@ def initialize_user_state_nftables(username, throttling=False):
                 f"Recently logged in user {username} under quota. Adding to high-speed users..."
             )
             make_single_user_high_speed(username)
-
-    log.error(
-        "initialize_user_state_nftables: Failed to initialize user state for nftables. No active config."
-    )
+    else:
+        log.error(
+            "initialize_user_state_nftables: Failed to initialize user state for nftables. No active config."
+        )
+        raise sqlm.ConfigNameError(
+            "initialize_user_state_nftables: Failed to initialize user state for nftables. No active config."
+        )
 
 
 def calculate_byte_delta(user_bytes, username, db_path=None):
@@ -218,16 +223,12 @@ def calculate_hypothetical_group_quotas_for_today(
 
         total_weekdays_left = compute_remaining_weekdays(now, reset_day)
 
-        log.debug(f"Total weekdays remaining in month: {total_weekdays_left}.")
-
         total_usage_today = sqlm.fetch_daily_system_bytes()
 
         total_daily_bytes = max(
             ((total_monthly_bytes_available / total_weekdays_left) - total_usage_today),
             0,
         )
-
-        log.debug(f"Total bytes available for today: {total_daily_bytes}.")
 
         group_config_dict = gen_group_config_dict_for_sqt(
             total_daily_bytes,
@@ -803,9 +804,9 @@ def gen_group_config_dict_for_sqt(
         group_config_dict, total_daily_bytes_available
     )
 
-    log.debug(
-        f"gen_group_config_dict_for_sqt: group_config_dict after max calcuation: {group_config_dict}"
-    )
+    # log.debug(
+    #     f"gen_group_config_dict_for_sqt: group_config_dict after max calcuation: {group_config_dict}"
+    # )
 
     # cases
     # 1. No groups with any members - working!
@@ -818,9 +819,9 @@ def gen_group_config_dict_for_sqt(
         if group_dict["n"] > 0
     }
 
-    log.debug(
-        f"gen_group_config_dict_for_sqt: truncated_group_config_dict: {truncated_group_config_dict}"
-    )
+    # log.debug(
+    #     f"gen_group_config_dict_for_sqt: truncated_group_config_dict: {truncated_group_config_dict}"
+    # )
 
     # Setting n=0 here because n is incremented in the calling function
     # `calculate_hypothetical_user_quota_for_tomorrow`.
@@ -852,8 +853,8 @@ def gen_group_config_dict_for_sqt(
         if group["n"] > 0
     ]
 
-    log.debug(f"gen_group_config_dict_for_sqt: ratios: {ratios}")
-    log.debug(f"gen_group_config_dict_for_sqt: group_config_dict: {group_config_dict}")
+    # log.debug(f"gen_group_config_dict_for_sqt: ratios: {ratios}")
+    # log.debug(f"gen_group_config_dict_for_sqt: group_config_dict: {group_config_dict}")
 
     total_ratio = fsum(ratios)
     leftover_ratio = 1.0 - total_ratio
@@ -980,15 +981,6 @@ def create_user(username, radius_password, group_name):
         if now.hour < 1 and now.min < 1:
             raise RuntimeError("User creation now allowed before 00:01.")
 
-        group_quotas = calculate_hypothetical_group_quotas_for_today(
-            group_name=group_name, reset_day=ACCOUNT_BILLING_DAY
-        )
-        log.debug(f"Hypothetical quota available for groups: {group_quotas}")
-
-        apply_new_quotas(group_quotas)
-        log.debug(f"Updated quotas for all groups:")
-        sqlh.log_all_table_information(sqlm.GROUP_TABLE_NAME)
-
         sqlm.insert_user_radius(username, radius_password)
         log.debug(f"Inserted user {username} into radius db.")
 
@@ -1015,16 +1007,17 @@ def change_user_group(username, new_group_name, old_group_name):
                 f"Failed to add user {username} to group {new_group_name}: Group does not exist."
             )
 
-        group_quotas = calculate_hypothetical_group_quotas_for_today(
-            group_name=new_group_name,
-            reset_day=ACCOUNT_BILLING_DAY,
-            old_group_name=old_group_name,
-        )
-        log.debug(f"Hypothetical quota available for groups: {group_quotas}")
+        # Testing removing these...
+        # group_quotas = calculate_hypothetical_group_quotas_for_today(
+        #     group_name=new_group_name,
+        #     reset_day=ACCOUNT_BILLING_DAY,
+        #     old_group_name=old_group_name,
+        # )
+        # log.debug(f"Hypothetical quota available for groups: {group_quotas}")
 
-        apply_new_quotas(group_quotas)
-        log.debug(f"Updated quotas for all groups:")
-        sqlh.log_all_table_information(sqlm.GROUP_TABLE_NAME)
+        # apply_new_quotas(group_quotas)
+        # log.debug(f"Updated quotas for all groups:")
+        # sqlh.log_all_table_information(sqlm.GROUP_TABLE_NAME)
 
         sqlm.remove_user_from_group_usage(username)
         log.debug(f"Removed user {username} from group {old_group_name}.")
@@ -1171,41 +1164,33 @@ def delete_user_from_system(username):
 
         remove_user_from_nftables(username)
 
-        tz = dt.timezone(dt.timedelta(hours=sqlh.UTC_OFFSET))
-        now = dt.datetime.now(tz)
+        # Testing removing these...
+        # tz = dt.timezone(dt.timedelta(hours=sqlh.UTC_OFFSET))
+        # now = dt.datetime.now(tz)
 
-        group_quotas_dict = calculate_hypothetical_group_quotas_for_today(
-            reset_day=ACCOUNT_BILLING_DAY
-        )
+        # group_quotas_dict = calculate_hypothetical_group_quotas_for_today(
+        #     reset_day=ACCOUNT_BILLING_DAY
+        # )
 
-        apply_new_quotas(group_quotas_dict)
-        log.debug(f"Updated quotas for all groups:")
-        sqlh.log_all_table_information(sqlm.GROUP_TABLE_NAME)
+        # apply_new_quotas(group_quotas_dict)
+        # log.debug(f"Updated quotas for all groups:")
+        # sqlh.log_all_table_information(sqlm.GROUP_TABLE_NAME)
 
         log.info(f"Successfully deleted user {username} from system.")
 
 
 def delete_group_from_system(group_name):
-    with QUOTA_LOCK:
 
-        group_exists = sqlm.check_if_group_exists(group_name)
+    group_exists = sqlm.check_if_group_exists(group_name)
 
-        if not group_exists:
-            raise sqlm.GroupNameError(
-                f"Failed to delete group {group_name}: Group does not exist."
-            )
-
-        sqlm.delete_group_usage(group_name)
-
-        group_quotas_dict = calculate_hypothetical_group_quotas_for_today(
-            reset_day=ACCOUNT_BILLING_DAY
+    if not group_exists:
+        raise sqlm.GroupNameError(
+            f"Failed to delete group {group_name}: Group does not exist."
         )
 
-        apply_new_quotas(group_quotas_dict)
-        log.debug(f"Updated quotas for all groups:")
-        sqlh.log_all_table_information(sqlm.GROUP_TABLE_NAME)
+    sqlm.delete_group_usage(group_name)
 
-        log.info(f"Successfully deleted group {group_name} from system.")
+    log.info(f"Successfully deleted group {group_name} from system.")
 
 
 def delete_all_users_from_system():
