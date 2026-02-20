@@ -140,12 +140,12 @@ def usage_updater(stop_event: threading.Event):
         reset_lock_acquired = qm.RESET_LOCK.acquire(blocking=False)
         if not reset_lock_acquired:
             continue  # reset in progress, skip tick
-        log.debug(f"usage_updater: Acquired RESET_LOCK")
+        # log.debug(f"usage_updater: Acquired RESET_LOCK")
         try:
             quota_lock_acquired = qm.QUOTA_LOCK.acquire(timeout=0.1)
             if not quota_lock_acquired:
                 continue  # admin is changing groups/quotas; skip tick
-            log.debug(f"usage_updater: Acquired QUOTA_LOCK")
+            # log.debug(f"usage_updater: Acquired QUOTA_LOCK")
             try:
                 tz = dt.timezone(dt.timedelta(hours=UTC_OFFSET))
                 now = dt.datetime.now(tz)
@@ -176,16 +176,16 @@ def usage_updater(stop_event: threading.Event):
                         f"usage_updater: Failed to execute monthly events, error: {e}"
                     )
 
-                log.debug("Updating user byte totals...")
+                # log.debug("Updating user byte totals...")
                 usage_dict = qm.update_all_users_bytes(usage_dict)
 
-                log.debug("Updating quota information for all users...")
+                # log.debug("Updating quota information for all users...")
                 quota_dict = qm.update_quota_information_all_users(quota_dict)
 
-                log.debug("Enforcing quotas for all users...")
+                # log.debug("Enforcing quotas for all users...")
                 qm.enforce_quotas_all_users(throttling=False)
 
-                log.debug("Updating num entities system state...")
+                # log.debug("Updating num entities system state...")
                 num_users, num_groups = qm.update_num_entities_system_state(
                     num_users, num_groups
                 )
@@ -195,14 +195,14 @@ def usage_updater(stop_event: threading.Event):
             finally:
                 if quota_lock_acquired:
                     qm.QUOTA_LOCK.release()
-                    log.debug(f"usage_updater: Released QUOTA_LOCK")
+                    # log.debug(f"usage_updater: Released QUOTA_LOCK")
         except Exception as e:
             log.error(f"usage_updater: Failed to execute usage update, error: {e}")
             stop_event.set()
         finally:
             if reset_lock_acquired:
                 qm.RESET_LOCK.release()
-                log.debug(f"usage_updater: Released RESET_LOCK")
+                # log.debug(f"usage_updater: Released RESET_LOCK")
 
 
 def start_usage_tracking(stop_event: threading.Event):

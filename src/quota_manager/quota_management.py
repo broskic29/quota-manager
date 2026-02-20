@@ -103,7 +103,7 @@ def is_user_authenticated(username, user_ip):
 
 
 def fetch_user_bytes(username):
-    log.debug(f"Fetching user bytes for user {username}...")
+    # log.debug(f"Fetching user bytes for user {username}...")
     try:
         user_ip = sqlm.fetch_user_ip_address_usage(username)
     except sqlh.IPAddressError:
@@ -303,7 +303,7 @@ def update_all_users_bytes(old_usage_dict, db_path=sqlh.USAGE_TRACKING_DB_PATH):
                 usage_dict = update_user_bytes(username, usage_dict)
 
     if usage_dict:
-        log.debug(usage_dict)
+        # log.debug(usage_dict)
         return usage_dict
 
     return old_usage_dict
@@ -1157,24 +1157,13 @@ def delete_user_from_system(username):
         )
 
         if user_exists_usage:
+            user_ip = sqlm.fetch_user_ip_address_usage(username)
             sqlm.delete_user_usage(username)
 
         if user_exists_radius:
             sqlm.delete_user_radius(username)
 
-        remove_user_from_nftables(username)
-
-        # Testing removing these...
-        # tz = dt.timezone(dt.timedelta(hours=sqlh.UTC_OFFSET))
-        # now = dt.datetime.now(tz)
-
-        # group_quotas_dict = calculate_hypothetical_group_quotas_for_today(
-        #     reset_day=ACCOUNT_BILLING_DAY
-        # )
-
-        # apply_new_quotas(group_quotas_dict)
-        # log.debug(f"Updated quotas for all groups:")
-        # sqlh.log_all_table_information(sqlm.GROUP_TABLE_NAME)
+        remove_user_from_nftables(username, user_ip=user_ip)
 
         log.info(f"Successfully deleted user {username} from system.")
 

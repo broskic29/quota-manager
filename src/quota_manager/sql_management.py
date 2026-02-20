@@ -1754,7 +1754,7 @@ def fetch_session_total_bytes(username, db_path=None):
 
         session_total_bytes = res[0]
 
-        log.debug(f"Session_total_bytes: {session_total_bytes}")
+        # log.debug(f"Session_total_bytes: {session_total_bytes}")
 
         return session_total_bytes
 
@@ -1783,8 +1783,8 @@ def update_user_bytes_usage(byte_delta, username, db_path=None):
         )
         raise UserNameError(f"User {username} does not exist.")
 
-    log.debug("Printing table info before update")
-    sqlh.log_all_table_information(USAGE_TRACKING_TABLE_NAME)
+    # log.debug("Printing table info before update")
+    # sqlh.log_all_table_information(USAGE_TRACKING_TABLE_NAME)
 
     con = sqlite3.connect(
         db_path, timeout=30, isolation_level=None
@@ -1830,8 +1830,8 @@ def update_user_bytes_usage(byte_delta, username, db_path=None):
     con.commit()
     con.close()
 
-    log.debug("Printing table info after update")
-    sqlh.log_all_table_information(USAGE_TRACKING_TABLE_NAME)
+    # log.debug("Printing table info after update")
+    # sqlh.log_all_table_information(USAGE_TRACKING_TABLE_NAME)
 
 
 def update_session_start_bytes(username, user_bytes, db_path=None):
@@ -2281,7 +2281,7 @@ def fetch_session_start_bytes(username, db_path=None):
                 f"Failed to fetch session_start_bytes for user {username}."
             )
         session_start_bytes = row[0]
-        log.debug(f"Session_start_bytes: {session_start_bytes}")
+        # log.debug(f"Session_start_bytes: {session_start_bytes}")
         return row[0]
     finally:
         con.close()

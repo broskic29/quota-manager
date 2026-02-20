@@ -30,7 +30,7 @@ def test_usage_updater_stops_on_exception_and_keeps_partial_db_writes(
     # First call updates u1, then crashes before u2
     def crashy_update_all_users_bytes():
         sqlm.update_user_bytes_usage(123, "u1", db_path=usage_db)
-        # raise RuntimeError("boom")
+        raise RuntimeError("boom")
 
     monkeypatch.setattr(qm, "update_all_users_bytes", crashy_update_all_users_bytes)
 
