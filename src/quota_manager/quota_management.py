@@ -687,14 +687,14 @@ def update_num_entities_system_state(num_users, num_groups):
         new_num_users = len(usernames)
         if new_num_users != num_users:
             log.debug("Updating num_users...")
-            sqlm.update_system_state_usage(num_users=num_users)
+            sqlm.update_system_state_usage(num_users=new_num_users)
             num_users = new_num_users
 
     if groups is not None:
         new_num_groups = len(groups)
         if new_num_groups != num_groups:
             log.debug("Updating num_groups...")
-            sqlm.update_system_state_usage(num_groups=num_groups)
+            sqlm.update_system_state_usage(num_groups=new_num_groups)
             num_groups = new_num_groups
 
     return num_users, num_groups

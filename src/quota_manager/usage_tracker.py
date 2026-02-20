@@ -130,8 +130,8 @@ def usage_updater(stop_event: threading.Event):
     quota_dict = {}
     usage_dict = {}
 
-    num_users = None
-    num_groups = None
+    num_users = 0
+    num_groups = 0
 
     while not stop_event.is_set():
         if stop_event.wait(USAGE_UPDATE_INTERVAL):
