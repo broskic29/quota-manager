@@ -356,6 +356,12 @@ def make_single_user_high_speed(username, user_ip=None):
             add_user_to_set(username, nftm.HIGH_SPEED_SET_NAME, user_ip=user_ip)
             log.debug(f"User {username} made high-speed.")
 
+            initialize_session_start_bytes(user_ip)
+            log.debug(f"User {username} session bytes reinitialized.")
+
+            sqlm.wipe_session_total_bytes(username)
+            log.debug(f"Session total bytes for {username} wiped.")
+
 
 def reset_throttling_single_user(username, user_ip=None):
 
@@ -387,6 +393,12 @@ def reset_dropping_single_user(username, user_ip=None):
     if user_ip:
         nftm.undrop_ip(user_ip)
         log.debug(f"User {username} undropped.")
+
+        initialize_session_start_bytes(user_ip)
+        log.debug(f"User {username} session bytes reinitialized.")
+
+        sqlm.wipe_session_total_bytes(username)
+        log.debug(f"Session total bytes for {username} wiped.")
 
 
 def reset_throttling_and_packet_dropping_all_users(db_path=None):
