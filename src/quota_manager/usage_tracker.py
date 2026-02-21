@@ -95,8 +95,12 @@ def daily_events(now):
             )
 
             qm.apply_new_quotas(group_quotas_dict)
+
+            qm.update_daily_byte_budget(now)
+
         except Exception as e:
             log.error(f"daily_events: Failed to execute daily events, error: {e}")
+            raise
         finally:
             qm.QUOTA_LOCK.release()
             log.debug(f"daily_events: Released QUOTA_LOCK")
@@ -116,6 +120,7 @@ def monthly_events():
             sqlm.usage_monthly_wipe()
         except Exception as e:
             log.error(f"monthly_events: Failed to execute daily events, error: {e}")
+            raise
         finally:
             qm.QUOTA_LOCK.release()
             log.debug(f"monthly_events: Released QUOTA_LOCK")
@@ -132,6 +137,17 @@ def usage_updater(stop_event: threading.Event):
 
     num_users = 0
     num_groups = 0
+
+    config = sqlm.fetch_active_config()
+
+    if config is None:
+        log.warning("usage_updater: System config not loaded.")
+        raise RuntimeError("usage_updater: System config not loaded.")
+
+    system_name = config["system_name"]
+
+    qm.initialize_session_start_bytes_for_system(system_name=system_name)
+    sqlm.wipe_session_total_bytes(system_name=system_name)
 
     while not stop_event.is_set():
         if stop_event.wait(USAGE_UPDATE_INTERVAL):
@@ -163,6 +179,7 @@ def usage_updater(stop_event: threading.Event):
                     log.debug(
                         f"usage_updater: Failed to execute daily events, error: {e}"
                     )
+                    raise
 
                 try:
                     system_monthly_wiped = qm.system_monthly_wipe_check()
@@ -175,17 +192,22 @@ def usage_updater(stop_event: threading.Event):
                     log.debug(
                         f"usage_updater: Failed to execute monthly events, error: {e}"
                     )
+                    raise
 
-                # log.debug("Updating user byte totals...")
+                log.debug("Updating user byte totals...")
                 usage_dict = qm.update_all_users_bytes(usage_dict)
 
-                # log.debug("Updating quota information for all users...")
+                log.debug("Updating quota information for all users...")
                 quota_dict = qm.update_quota_information_all_users(quota_dict)
+                log.debug(quota_dict)
 
-                # log.debug("Enforcing quotas for all users...")
+                log.debug("Enforcing quotas for all users...")
                 qm.enforce_quotas_all_users(throttling=False)
 
-                # log.debug("Updating num entities system state...")
+                log.debug("Updating system byte totals...")
+                qm.update_total_system_bytes()
+
+                log.debug("Updating num entities system state...")
                 num_users, num_groups = qm.update_num_entities_system_state(
                     num_users, num_groups
                 )
@@ -199,6 +221,7 @@ def usage_updater(stop_event: threading.Event):
         except Exception as e:
             log.error(f"usage_updater: Failed to execute usage update, error: {e}")
             stop_event.set()
+            raise
         finally:
             if reset_lock_acquired:
                 qm.RESET_LOCK.release()

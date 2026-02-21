@@ -1313,6 +1313,16 @@ admin_usage_template = """
         </div>
 
         <div class="stat">
+          <div class="label">True system monthly usage</div>
+          <div class="value">
+            {{ (monthly_true_system_used|default(0))|round(2) }} / {{ (monthly_budget|default(0))|round(2) }} {{ monthly_system_unit or "" }}
+          </div>
+          <div class="muted">
+            Remaining: {{ (monthly_true_system_remaining|default(0))|round(2) }} {{ monthly_system_unit or "" }}
+          </div>
+        </div>
+
+        <div class="stat">
           <div class="label">Monthly reset</div>
           <div class="value">{{ reset_dt or "-" }}</div>
           <div class="muted">Billing day: {{ billing_day or "-" }}</div>

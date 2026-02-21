@@ -4,6 +4,10 @@ import logging
 from .app import QuotaManagerApp
 from quota_manager.logging_config import configure_logging
 
+import faulthandler
+
+faulthandler.enable()
+
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Quota Manager CLI")

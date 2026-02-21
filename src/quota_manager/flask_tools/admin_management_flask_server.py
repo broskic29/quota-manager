@@ -658,6 +658,7 @@ def admin_config():
 
         active_days = request.form.getlist("active_days")
         active_days = [int(x) for x in active_days] if active_days else []
+        active_days_list = ",".join(str(d) for d in active_days)
 
         allowed_macs = (request.form.get("allowed_macs") or "").strip()
 
@@ -674,7 +675,7 @@ def admin_config():
             system_name=cfg_system_state,
             total_bytes=total_gb * 1024**3,
             throttling_enabled=throttling_enabled,
-            active_days=",".join(str(d) for d in active_days),
+            active_days=active_days_list,
             mac_set_limitation=mac_set_limitation,
             allowed_macs=allowed_macs,
             active_config=1,
@@ -721,6 +722,18 @@ def admin_config():
 
             msg = " Successfully applied new data quotas."
 
+        _, error = flu.safe_call(
+            qm.update_daily_byte_budget,
+            error,
+            CONFIG_ERROR_MESSAGES,
+        )
+
+        log.debug(f"Updated daily byte budget")
+        sqlh.log_all_table_information(sqlm.SYSTEM_STATE_TABLE_NAME)
+
+        if error:
+            return render_template_string(ahtml.success_page, message=error)
+
         return render_template_string(
             ahtml.success_page,
             message=f"Successfully updated config system config." + msg,
@@ -742,6 +755,10 @@ def admin_usage():
     msg = session.pop("message", "") or ""
     error = session.pop("error", "") or ""
 
+    USAGE_ERROR_MESSAGES = {
+        flu.UndefinedException: None,
+    }
+
     tz = dt.timezone(dt.timedelta(hours=sqlh.UTC_OFFSET))
     now = dt.datetime.now(tz)
 
@@ -752,15 +769,19 @@ def admin_usage():
     monthly_used_bytes = float(sqlm.fetch_monthly_usage_bytes() or 0.0)
     monthly_remaining_bytes = max(monthly_budget_bytes - monthly_used_bytes, 0.0)
 
-    # compute_remaining_weekdays can return None if inputs are weird; guard it
-    active_days_left = (
-        qm.compute_remaining_weekdays(now, reset_dt.day) if reset_dt else 0
+    true_system_monthly_usage = float(
+        sqlm.fetch_total_system_monthly_usage_bytes() or 0.0
     )
-    active_days_left = int(active_days_left or 0)
+    monthly_true_system_remaining_bytes = max(
+        monthly_budget_bytes - true_system_monthly_usage, 0.0
+    )
 
-    daily_budget_bytes = (
-        (monthly_remaining_bytes / active_days_left) if active_days_left > 0 else 0.0
+    daily_budget_bytes, error = flu.safe_call(
+        sqlm.fetch_daily_budget_bytes,
+        error,
+        USAGE_ERROR_MESSAGES,
     )
+
     daily_used_bytes = float(sqlm.fetch_daily_usage_bytes() or 0.0)
 
     daily_unit = flu.pick_unit(
@@ -769,13 +790,19 @@ def admin_usage():
     monthly_unit = flu.pick_unit(
         max(float(monthly_budget_bytes or 0.0), float(monthly_used_bytes or 0.0))
     )
+    monthly_system_unit = flu.pick_unit(
+        max(
+            float(monthly_budget_bytes or 0.0),
+            float(true_system_monthly_usage or 0.0),
+        )
+    )
 
     users = sqlm.fetch_users_usage_rows() or []
 
     reset_str = reset_dt.strftime("%Y-%m-%d 00:00") if reset_dt else "-"
 
     log.debug(
-        f"admin_usage: monthly_used_bytes: {monthly_used_bytes}, daily_used_bytes={daily_used_bytes}"
+        f"admin_usage: monthly_used_bytes: {monthly_used_bytes}, daily_used_bytes={daily_used_bytes}, true_system_monthly_usage={true_system_monthly_usage}"
     )
 
     return render_template_string(
@@ -797,6 +824,7 @@ def admin_usage():
             else 0.0
         ),
         monthly_unit=monthly_unit,
+        monthly_system_unit=monthly_system_unit,
         monthly_used=(
             flu.bytes_to_unit(monthly_used_bytes, monthly_unit)
             if monthly_used_bytes is not None
@@ -810,6 +838,16 @@ def admin_usage():
         monthly_remaining=(
             flu.bytes_to_unit(monthly_remaining_bytes, monthly_unit)
             if monthly_remaining_bytes is not None
+            else 0.0
+        ),
+        monthly_true_system_used=(
+            flu.bytes_to_unit(true_system_monthly_usage, monthly_system_unit)
+            if true_system_monthly_usage is not None
+            else 0.0
+        ),
+        monthly_true_system_remaining=(
+            flu.bytes_to_unit(monthly_true_system_remaining_bytes, monthly_system_unit)
+            if monthly_true_system_remaining_bytes is not None
             else 0.0
         ),
     )

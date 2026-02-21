@@ -136,6 +136,23 @@ def initialize_session_start_bytes(ip_addr):
     return session_start_bytes
 
 
+def initialize_session_start_bytes_for_system(system_name):
+    log.debug(f"Initializing session start bytes for system '{system_name}'")
+    try:
+        system_session_start_bytes = nftm.get_system_bytes_subprocess(
+            nftm.TABLE_FAMILY,
+            nftm.TABLE_NAME,
+            nftm.QUOTA_MANAGER_FORWARD_CHAIN_NAME,
+            nftm.WAN_IFACE_NAME,
+        )
+    except Exception as e:
+        log.error(f"Failed to initialize start bytes for system: {e}")
+        system_session_start_bytes = 0
+    log.debug(f"Session start bytes: {system_session_start_bytes}")
+
+    sqlm.update_session_start_bytes(system_session_start_bytes, system_name=system_name)
+
+
 def initialize_user_state_nftables(username, throttling=False):
 
     exceeds_quota, _, _ = evaluate_user_bytes_against_quota(username)
@@ -169,10 +186,14 @@ def initialize_user_state_nftables(username, throttling=False):
         )
 
 
-def calculate_byte_delta(user_bytes, username, db_path=None):
+def calculate_byte_delta(user_bytes, username=None, system_name=None, db_path=None):
     db_path = db_path or sqlh.USAGE_TRACKING_DB_PATH
-    session_total_bytes = sqlm.fetch_session_total_bytes(username, db_path)
-    session_start_bytes = sqlm.fetch_session_start_bytes(username, db_path)
+    session_total_bytes = sqlm.fetch_session_bytes(
+        username=username, system_name=system_name, byte_type="total", db_path=db_path
+    )
+    session_start_bytes = sqlm.fetch_session_bytes(
+        username=username, system_name=system_name, byte_type="start", db_path=db_path
+    )
 
     # nft counter reset / rollover / element re-added
     if user_bytes < session_start_bytes:
@@ -180,14 +201,39 @@ def calculate_byte_delta(user_bytes, username, db_path=None):
             f"Counter reset detected for {username}: user_bytes={user_bytes} < session_start_bytes={session_start_bytes}. "
             "Resetting session tracking baseline."
         )
-        sqlm.update_session_start_bytes(username, user_bytes, db_path)
-        sqlm.wipe_session_total_bytes(username, db_path)
+        sqlm.update_session_start_bytes(
+            user_bytes, username=username, system_name=system_name, db_path=db_path
+        )
+        sqlm.wipe_session_total_bytes(
+            username=username, system_name=system_name, db_path=db_path
+        )
         return 0
 
     byte_delta = (user_bytes - session_start_bytes) - session_total_bytes
     if byte_delta < 0:
         # defensive: should not happen, but never subtract usage
-        log.warning(f"Negative byte delta for {username}: {byte_delta}. Clamping to 0.")
+        if username:
+            log.warning(
+                f"Negative byte delta for user {username}: {byte_delta}. Clamping to 0."
+            )
+        else:
+
+            config = sqlm.fetch_active_config()
+
+            if config is None:
+                log.error(
+                    f"calculate_byte_delta: Table {sqlm.CONFIGS_TABLE_NAME} empty or does not exist."
+                )
+                log.warning(
+                    f"Negative byte delta for system: {byte_delta}. Clamping to 0."
+                )
+
+                return 0
+            system_name = config["system_name"]
+
+            log.warning(
+                f"Negative byte delta for system '{system_name}': {byte_delta}. Clamping to 0."
+            )
         return 0
 
     return byte_delta
@@ -309,6 +355,31 @@ def update_all_users_bytes(old_usage_dict, db_path=sqlh.USAGE_TRACKING_DB_PATH):
     return old_usage_dict
 
 
+def update_total_system_bytes(db_path=sqlh.USAGE_TRACKING_DB_PATH):
+    db_path = db_path or sqlh.USAGE_TRACKING_DB_PATH
+    system_bytes = nftm.get_system_bytes_subprocess(
+        nftm.TABLE_FAMILY,
+        nftm.TABLE_NAME,
+        nftm.QUOTA_MANAGER_FORWARD_CHAIN_NAME,
+        nftm.WAN_IFACE_NAME,
+    )
+
+    log.debug(f"update_total_system_bytes: system_bytes: {system_bytes}")
+
+    config = sqlm.fetch_active_config()
+
+    if config is None:
+        log.warning("update_total_system_bytes: System config not loaded.")
+        return
+
+    system_name = config["system_name"]
+
+    if system_bytes is not None:
+        byte_delta = calculate_byte_delta(system_bytes, system_name=system_name)
+        sqlm.update_system_bytes_usage(byte_delta, system_name, db_path)
+        sqlm.update_user_bytes_usage
+
+
 def throttle_single_user(username, user_ip=None):
 
     if user_ip is None:
@@ -359,7 +430,7 @@ def make_single_user_high_speed(username, user_ip=None):
             initialize_session_start_bytes(user_ip)
             log.debug(f"User {username} session bytes reinitialized.")
 
-            sqlm.wipe_session_total_bytes(username)
+            sqlm.wipe_session_total_bytes(username=username)
             log.debug(f"Session total bytes for {username} wiped.")
 
 
@@ -397,7 +468,7 @@ def reset_dropping_single_user(username, user_ip=None):
         initialize_session_start_bytes(user_ip)
         log.debug(f"User {username} session bytes reinitialized.")
 
-        sqlm.wipe_session_total_bytes(username)
+        sqlm.wipe_session_total_bytes(username=username)
         log.debug(f"Session total bytes for {username} wiped.")
 
 
@@ -1105,10 +1176,14 @@ def log_in_user(username, user_ip, user_mac):
                 session_start_bytes = initialize_session_start_bytes(user_ip)
 
                 # Update db with start bytes
-                sqlm.update_session_start_bytes(username, session_start_bytes)
+                sqlm.update_session_start_bytes(
+                    session_start_bytes,
+                    system_name=session_start_bytes,
+                    username=username,
+                )
 
                 # Reset db session_total_bytes
-                sqlm.wipe_session_total_bytes(username)
+                sqlm.wipe_session_total_bytes(username=username)
 
                 # Initialize ip timeouts
                 now = time.monotonic()
@@ -1120,7 +1195,7 @@ def log_in_user(username, user_ip, user_mac):
                 log_out_user(username)
 
                 # For flask_server
-                raise e
+                raise RuntimeError(f"Error logging in user: {username}: {e}")
 
             return True
         else:
@@ -1137,7 +1212,7 @@ def log_out_user(username):
 
                 remove_user_from_ip_timeouts(username)
 
-                sqlm.wipe_session_total_bytes(username)
+                sqlm.wipe_session_total_bytes(username=username)
 
                 sqlm.logout_user_usage(username)
 
@@ -1255,9 +1330,11 @@ def system_hard_reset():
         except sqlm.ConfigNameError as e:
             raise sqlm.DBInitializationError(f"Databases failed to iniitalize: {e}")
 
+        system_name = config["system_name"]
+
         # Default: Mon-Fri active (0-4), throttling off, mac limitation off
         sqlm.initialize_system_state_usage(
-            system_name=config["system_name"],
+            system_name=system_name,
             system_date=date_str,
             wiped_this_month=True,
             total_daily_bytes=0,
@@ -1265,8 +1342,14 @@ def system_hard_reset():
             all_time_bytes=0,
             num_users=0,
             num_groups=0,
+            total_system_monthly_bytes=0,
+            session_start_bytes=0,
+            session_total_bytes=0,
+            daily_budget_bytes=0,
             db_path=sqlh.USAGE_TRACKING_DB_PATH,
         )
+
+        initialize_session_start_bytes_for_system(system_name)
 
         update_num_entities_system_state(num_users=0, num_groups=0)
 
@@ -1493,3 +1576,18 @@ def update_system_date(now):
 
 def update_monthly_wipe():
     sqlm.update_system_state_usage(wiped_this_month=True)
+
+
+def update_daily_byte_budget(now=None):
+
+    if now is None:
+        tz = dt.timezone(dt.timedelta(hours=sqlh.UTC_OFFSET))
+        now = dt.datetime.now(tz)
+
+    total_monthly_bytes = sqlm.fetch_config_total_bytes()
+
+    weekdays_left = compute_remaining_weekdays(now, ACCOUNT_BILLING_DAY)
+
+    sqlm.update_system_state_usage(
+        daily_budget_bytes=total_monthly_bytes / weekdays_left
+    )

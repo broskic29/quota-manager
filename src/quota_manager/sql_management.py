@@ -229,6 +229,10 @@ def init_usage_db():
             all_time_bytes INTEGER,
             num_users INTEGER,
             num_groups INTEGER,
+            total_system_monthly_bytes INTEGER,
+            session_start_bytes INTEGER,
+            session_total_bytes INTEGER,
+            daily_budget_bytes INTEGER,
             UNIQUE(system_name)
         );
         """
@@ -276,6 +280,10 @@ def init_usage_db():
                 all_time_bytes=0,
                 num_users=0,
                 num_groups=0,
+                total_system_monthly_bytes=0,
+                session_start_bytes=0,
+                session_total_bytes=0,
+                daily_budget_bytes=0,
                 db_path=sqlh.USAGE_TRACKING_DB_PATH,
             )
 
@@ -876,6 +884,10 @@ def initialize_system_state_usage(
     all_time_bytes: int | None = None,
     num_users: int | None = None,
     num_groups: int | None = None,
+    total_system_monthly_bytes: int | None = None,
+    session_start_bytes: int | None = None,
+    session_total_bytes: int | None = None,
+    daily_budget_bytes: int | None = None,
     db_path=None,
 ):
     db_path = db_path or sqlh.USAGE_TRACKING_DB_PATH
@@ -887,8 +899,8 @@ def initialize_system_state_usage(
 
     cur.execute(
         f"""
-    INSERT INTO {SYSTEM_STATE_TABLE_NAME} (system_name, system_date, wiped_this_month, total_daily_bytes, total_monthly_bytes, all_time_bytes, num_users, num_groups)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    INSERT INTO {SYSTEM_STATE_TABLE_NAME} (system_name, system_date, wiped_this_month, total_daily_bytes, total_monthly_bytes, all_time_bytes, num_users, num_groups, total_system_monthly_bytes, session_start_bytes, session_total_bytes, daily_budget_bytes)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     """,
         (
             system_name,
@@ -899,6 +911,10 @@ def initialize_system_state_usage(
             all_time_bytes,
             num_users,
             num_groups,
+            total_system_monthly_bytes,
+            session_start_bytes,
+            session_total_bytes,
+            daily_budget_bytes,
         ),
     )
 
@@ -915,6 +931,10 @@ def update_system_state_usage(
     all_time_bytes: int | None = None,
     num_users: int | None = None,
     num_groups: int | None = None,
+    total_system_monthly_bytes: int | None = None,
+    session_start_bytes: int | None = None,
+    session_total_bytes: int | None = None,
+    daily_budget_bytes: int | None = None,
     db_path=None,
 ):
     db_path = db_path or sqlh.USAGE_TRACKING_DB_PATH
@@ -938,6 +958,20 @@ def update_system_state_usage(
         values[5] = all_time_bytes if all_time_bytes is not None else values[5]
         values[6] = num_users if num_users is not None else values[6]
         values[7] = num_groups if num_groups is not None else values[7]
+        values[8] = (
+            total_system_monthly_bytes
+            if total_system_monthly_bytes is not None
+            else values[8]
+        )
+        values[9] = (
+            session_start_bytes if session_start_bytes is not None else values[9]
+        )
+        values[10] = (
+            session_total_bytes if session_total_bytes is not None else values[10]
+        )
+        values[11] = (
+            daily_budget_bytes if daily_budget_bytes is not None else values[11]
+        )
 
         con = sqlite3.connect(
             db_path, timeout=30, isolation_level=None
@@ -1150,7 +1184,7 @@ def fetch_system_state_row(db_path=None):
     cur = con.cursor()
     cur.execute(
         f"""
-        SELECT system_name, system_date, wiped_this_month, total_daily_bytes, total_monthly_bytes, all_time_bytes, num_users, num_groups
+        SELECT system_name, system_date, wiped_this_month, total_daily_bytes, total_monthly_bytes, all_time_bytes, num_users, num_groups, total_system_monthly_bytes, session_start_bytes, session_total_bytes, daily_budget_bytes
         FROM {SYSTEM_STATE_TABLE_NAME}
         WHERE system_name = ?
         LIMIT 1
@@ -1191,6 +1225,9 @@ def fetch_system_state(db_path=None) -> dict:
         "all_time_bytes": row[5],
         "num_users": row[6],
         "num_groups": row[7],
+        "total_system_monthly_bytes": row[8],
+        "session_start_bytes": row[9],
+        "session_total_bytes": row[10],
     }
 
     return cfg
@@ -1612,6 +1649,23 @@ def fetch_monthly_usage_bytes(db_path=None):
     return res[0]
 
 
+def fetch_total_system_monthly_usage_bytes(db_path=None):
+    db_path = db_path or sqlh.USAGE_TRACKING_DB_PATH
+    config = fetch_active_config()
+    con = sqlite3.connect(db_path, timeout=30, isolation_level=None)
+    cur = con.cursor()
+    cur.execute(
+        f"""
+        SELECT total_system_monthly_bytes
+        FROM {SYSTEM_STATE_TABLE_NAME}
+        WHERE system_name = ?
+        """,
+        (config["system_name"],),
+    )
+    res = cur.fetchone()
+    return res[0]
+
+
 def fetch_max_daily_usage(db_path=None):
     """
     Should iterate across each user in the system, summing (user_quota - daily_usage).
@@ -1706,27 +1760,51 @@ def fetch_all_ip_addr_ip_timeouts(db_path=None):
     return cur.fetchall()
 
 
-def fetch_session_total_bytes(username, db_path=None):
+def fetch_session_bytes(username=None, system_name=None, byte_type=None, db_path=None):
     db_path = db_path or sqlh.USAGE_TRACKING_DB_PATH
 
-    if not sqlh.check_if_table_exists(
-        USAGE_TRACKING_TABLE_NAME, sqlh.USAGE_TRACKING_DB_PATH
-    ) or sqlh.check_if_table_empty(
-        USAGE_TRACKING_TABLE_NAME, sqlh.USAGE_TRACKING_DB_PATH
-    ):
-        log.debug(
-            f"fetch_max_daily_usage: Table {USAGE_TRACKING_TABLE_NAME} empty or does not exist."
-        )
-        return 0
+    if (username is None and system_name is None) or (username and system_name):
+        log.error("fetch_session_bytes: Must specify either username or system name.")
+        raise ValueError("Must specify either username or system name.")
 
-    # Raise error if user doesn't exist
-    user_exists = check_if_user_exists(username)
+    byte_type_dict = {"start": "session_start_bytes", "total": "session_total_bytes"}
 
-    if not user_exists:
-        log.error(
-            f"Failed fetching quota_bytes for user {username}: not found in users table."
-        )
-        raise UserNameError(f"User {username} does not exist.")
+    if byte_type is None or byte_type not in byte_type_dict:
+        log.error("fetch_session_bytes: Must specify a proper byte type.")
+        raise ValueError("Must specify a proper byte type.")
+
+    byte_type = byte_type_dict[byte_type]
+
+    if username:
+        if not sqlh.check_if_table_exists(
+            USAGE_TRACKING_TABLE_NAME, sqlh.USAGE_TRACKING_DB_PATH
+        ) or sqlh.check_if_table_empty(
+            USAGE_TRACKING_TABLE_NAME, sqlh.USAGE_TRACKING_DB_PATH
+        ):
+            log.debug(
+                f"fetch_max_daily_usage: Table {USAGE_TRACKING_TABLE_NAME} empty or does not exist."
+            )
+            return 0
+
+        # Raise error if user doesn't exist
+        user_exists = check_if_user_exists(username)
+
+        if not user_exists:
+            log.error(
+                f"Failed fetching quota_bytes for user {username}: not found in users table."
+            )
+            raise UserNameError(f"User {username} does not exist.")
+
+    elif system_name:
+        if not sqlh.check_if_table_exists(
+            SYSTEM_STATE_TABLE_NAME, sqlh.USAGE_TRACKING_DB_PATH
+        ) or sqlh.check_if_table_empty(
+            SYSTEM_STATE_TABLE_NAME, sqlh.USAGE_TRACKING_DB_PATH
+        ):
+            log.debug(
+                f"fetch_session_start_bytes: Table {SYSTEM_STATE_TABLE_NAME} empty or does not exist."
+            )
+            return 0
 
     con = sqlite3.connect(
         db_path, timeout=30, isolation_level=None
@@ -1735,29 +1813,45 @@ def fetch_session_total_bytes(username, db_path=None):
     try:
         cur = con.cursor()
 
-        cur.execute(
-            """
-            SELECT session_total_bytes
-            FROM users
-            WHERE username = ?
-            """,
-            (username,),
-        )
-
-        res = cur.fetchone()
-
-        if res is None:
-            log.error(
-                f"ERROR: Operation to fetch byte information failed for user {username}."
+        if username:
+            cur.execute(
+                f"""
+                SELECT {byte_type}
+                FROM users
+                WHERE username = ?
+                """,
+                (username,),
             )
-            return res
+        elif system_name:
+            cur.execute(
+                f"""
+                SELECT {byte_type}
+                FROM system_state
+                WHERE system_name = ?
+                """,
+                (system_name,),
+            )
 
-        session_total_bytes = res[0]
+        row = cur.fetchone()
+        if row is None:
+            if username:
+                log.error(
+                    f"ERROR: Operation to fetch {byte_type} failed for user {username}."
+                )
+                raise RuntimeError(f"Failed to fetch {byte_type} for user {username}.")
+            elif system_name:
+                log.error(
+                    f"ERROR: Operation to fetch {byte_type} failed for system '{system_name}'."
+                )
+                raise RuntimeError(
+                    f"Failed to fetch {byte_type} for system '{system_name}'."
+                )
+        session_bytes = row[0]
 
-        # log.debug(f"Session_total_bytes: {session_total_bytes}")
+        name = username if username else system_name
+        log.debug(f"{byte_type}: {session_bytes} for {name}")
 
-        return session_total_bytes
-
+        return session_bytes
     finally:
         con.close()
 
@@ -1834,16 +1928,29 @@ def update_user_bytes_usage(byte_delta, username, db_path=None):
     # sqlh.log_all_table_information(USAGE_TRACKING_TABLE_NAME)
 
 
-def update_session_start_bytes(username, user_bytes, db_path=None):
+def update_system_bytes_usage(byte_delta, system_name, db_path=None):
     db_path = db_path or sqlh.USAGE_TRACKING_DB_PATH
-    # Raise error if user doens't exist
-    user_exists = check_if_user_exists(username)
 
-    if not user_exists:
+    if not system_name:
         log.error(
-            f"Failed updating session_start_bytes for user {username}: not found in users table."
+            "update_system_bytes_usage: Error, no active config. Unable to update system bytes."
         )
-        raise UserNameError(f"User {username} does not exist.")
+        raise ConfigNameError(
+            "update_system_bytes_usage: Error, no active config. Unable to update system bytes."
+        )
+
+    if not sqlh.check_if_table_exists(
+        SYSTEM_STATE_TABLE_NAME, sqlh.USAGE_TRACKING_DB_PATH
+    ) or sqlh.check_if_table_empty(
+        SYSTEM_STATE_TABLE_NAME, sqlh.USAGE_TRACKING_DB_PATH
+    ):
+        log.debug(
+            f"fetch_session_start_bytes: Table {SYSTEM_STATE_TABLE_NAME} empty or does not exist."
+        )
+        return 0
+
+    # log.debug("Printing table info before update")
+    # sqlh.log_all_table_information(SYSTEM_STATE_TABLE_NAME)
 
     con = sqlite3.connect(
         db_path, timeout=30, isolation_level=None
@@ -1852,13 +1959,15 @@ def update_session_start_bytes(username, user_bytes, db_path=None):
 
     cur.execute(
         """
-        UPDATE users
-        SET session_start_bytes = ?
-        WHERE username = ?
+        UPDATE system_state
+        SET total_system_monthly_bytes = total_system_monthly_bytes + ?,
+            session_total_bytes = session_total_bytes + ?
+        WHERE system_name = ?
         """,
         (
-            user_bytes,
-            username,
+            byte_delta,
+            byte_delta,
+            system_name,
         ),
     )
 
@@ -1867,38 +1976,160 @@ def update_session_start_bytes(username, user_bytes, db_path=None):
     con.commit()
     con.close()
 
+    # log.debug("Printing table info after update")
+    # sqlh.log_all_table_information(USAGE_TRACKING_TABLE_NAME)
 
-def wipe_session_total_bytes(username, db_path=None):
 
-    log.debug(f"Wiping session total bytes for {username}...")
-
+def update_session_start_bytes(
+    user_bytes, username=None, system_name=None, db_path=None
+):
     db_path = db_path or sqlh.USAGE_TRACKING_DB_PATH
 
-    # Raise error if user doens't exist
-    user_exists = check_if_user_exists(username)
+    if (username is None and system_name is None) or (username and system_name):
+        log.error("fetch_session_bytes: Must specify either username or system name.")
+        raise ValueError("Must specify either username or system name.")
 
-    if not user_exists:
-        log.error(
-            f"Failed wiping session_total_bytes for user {username}: not found in users table."
-        )
-        raise UserNameError(f"User {username} does not exist.")
+    if username:
+        if not sqlh.check_if_table_exists(
+            USAGE_TRACKING_TABLE_NAME, sqlh.USAGE_TRACKING_DB_PATH
+        ) or sqlh.check_if_table_empty(
+            USAGE_TRACKING_TABLE_NAME, sqlh.USAGE_TRACKING_DB_PATH
+        ):
+            log.debug(
+                f"update_session_start_bytes: Table {USAGE_TRACKING_TABLE_NAME} empty or does not exist."
+            )
+            return 0
+        # Raise error if user doens't exist
+        user_exists = check_if_user_exists(username)
+
+        if not user_exists:
+            log.error(
+                f"Failed updating session_start_bytes for user {username}: not found in users table."
+            )
+            raise UserNameError(f"User {username} does not exist.")
+
+    elif system_name:
+        if not sqlh.check_if_table_exists(
+            SYSTEM_STATE_TABLE_NAME, sqlh.USAGE_TRACKING_DB_PATH
+        ) or sqlh.check_if_table_empty(
+            SYSTEM_STATE_TABLE_NAME, sqlh.USAGE_TRACKING_DB_PATH
+        ):
+            log.debug(
+                f"update_session_start_bytes: Table {SYSTEM_STATE_TABLE_NAME} empty or does not exist."
+            )
+            return 0
 
     con = sqlite3.connect(
         db_path, timeout=30, isolation_level=None
     )  # Connects to database
     cur = con.cursor()
 
-    cur.execute(
-        """
-        UPDATE users
-        SET session_total_bytes = ?
-        WHERE username = ?
-        """,
-        (
-            0,
-            username,
-        ),
-    )
+    if username:
+        cur.execute(
+            f"""
+            UPDATE {USAGE_TRACKING_TABLE_NAME}
+            SET session_start_bytes = ?
+            WHERE username = ?
+            """,
+            (
+                user_bytes,
+                username,
+            ),
+        )
+    elif system_name:
+        cur.execute(
+            f"""
+            UPDATE {SYSTEM_STATE_TABLE_NAME}
+            SET session_start_bytes = ?
+            WHERE system_name = ?
+            """,
+            (
+                user_bytes,
+                system_name,
+            ),
+        )
+
+    # Should really add error checking here...
+
+    con.commit()
+    con.close()
+
+
+def wipe_session_total_bytes(username=None, system_name=None, db_path=None):
+
+    if (username is None and system_name is None) or (username and system_name):
+        log.error("fetch_session_bytes: Must specify either username or system name.")
+        raise ValueError("Must specify either username or system name.")
+
+    db_path = db_path or sqlh.USAGE_TRACKING_DB_PATH
+
+    if username:
+        if not sqlh.check_if_table_exists(
+            USAGE_TRACKING_TABLE_NAME, sqlh.USAGE_TRACKING_DB_PATH
+        ) or sqlh.check_if_table_empty(
+            USAGE_TRACKING_TABLE_NAME, sqlh.USAGE_TRACKING_DB_PATH
+        ):
+            log.debug(
+                f"wipe_session_total_bytes: Table {USAGE_TRACKING_TABLE_NAME} empty or does not exist."
+            )
+            return 0
+        # Raise error if user doens't exist
+        user_exists = check_if_user_exists(username)
+
+        if not user_exists:
+            log.error(
+                f"Failed wiping session_total_bytes for user {username}: not found in users table."
+            )
+            raise UserNameError(f"User {username} does not exist.")
+
+        log.debug(f"Wiping session total bytes for {username}...")
+
+    elif system_name:
+        if not sqlh.check_if_table_exists(
+            SYSTEM_STATE_TABLE_NAME, sqlh.USAGE_TRACKING_DB_PATH
+        ) or sqlh.check_if_table_empty(
+            SYSTEM_STATE_TABLE_NAME, sqlh.USAGE_TRACKING_DB_PATH
+        ):
+            log.debug(
+                f"wipe_session_total_bytes: Table {SYSTEM_STATE_TABLE_NAME} empty or does not exist."
+            )
+            return 0
+
+    con = sqlite3.connect(
+        db_path, timeout=30, isolation_level=None
+    )  # Connects to database
+    cur = con.cursor()
+
+    if username:
+        cur.execute(
+            f"""
+            UPDATE {USAGE_TRACKING_TABLE_NAME}
+            SET session_total_bytes = ?
+            WHERE username = ?
+            """,
+            (
+                0,
+                username,
+            ),
+        )
+        log.debug(
+            f"wipe_session_total_bytes: Wiped session_total_bytes for user {username}"
+        )
+    elif system_name:
+        cur.execute(
+            f"""
+            UPDATE {SYSTEM_STATE_TABLE_NAME}
+            SET session_total_bytes = ?
+            WHERE system_name = ?
+            """,
+            (
+                0,
+                system_name,
+            ),
+        )
+        log.debug(
+            f"wipe_session_total_bytes: Wiped session_total_bytes for system {system_name}"
+        )
 
     # Should really add error checking here...
 
@@ -1949,8 +2180,9 @@ def usage_monthly_wipe(db_path=None):
     cur.execute(
         """
         UPDATE system_state
-        SET total_monthly_bytes = 0
+        SET total_monthly_bytes = ?, total_system_monthly_bytes = ?
         """,
+        (0, 0),
     )
     con.commit()
     con.close()
@@ -2001,6 +2233,58 @@ def fetch_daily_system_bytes(db_path=None):
         row = cur.fetchone()
         if row is None:
             log.error(f"ERROR: Operation to fetch daily system bytes failed.")
+            return None
+        return row[0]
+    finally:
+        con.close()
+
+
+def fetch_daily_budget_bytes(db_path=None):
+    db_path = db_path or sqlh.USAGE_TRACKING_DB_PATH
+
+    if not sqlh.check_if_table_exists(
+        SYSTEM_STATE_TABLE_NAME, sqlh.USAGE_TRACKING_DB_PATH
+    ) or sqlh.check_if_table_empty(
+        SYSTEM_STATE_TABLE_NAME, sqlh.USAGE_TRACKING_DB_PATH
+    ):
+        log.debug(
+            f"fetch_daily_budget_bytes: Table {SYSTEM_STATE_TABLE_NAME} empty or does not exist."
+        )
+        return 0
+
+    try:
+        config = fetch_active_config()
+    except ConfigNameError as e:
+        log.error(f"fetch_daily_budget_bytes: Failed to update budget bytes: {e}")
+        raise
+
+    system_name = config.get("system_name")
+
+    if config.get("system_name") is None:
+        raise SystemStateError(
+            "fetch_daily_budget_bytes: System state database left in corrputed state."
+        )
+
+    con = sqlite3.connect(
+        db_path, timeout=30, isolation_level=None
+    )  # Connects to database
+    # Need to add try blocks and error catching for all of these things at some point.
+    try:
+        cur = con.cursor()
+
+        cur.execute(
+            f"""
+            SELECT daily_budget_bytes
+            FROM {SYSTEM_STATE_TABLE_NAME}
+            WHERE system_name = ?
+            """,
+            (system_name,),
+        )
+        row = cur.fetchone()
+        if row is None:
+            log.error(
+                f"ERROR: Operation to fetch daily budget failed for system {system_name}."
+            )
             return None
         return row[0]
     finally:
@@ -2233,58 +2517,6 @@ def fetch_high_speed_quota_for_user_usage(username, db_path=None):
         )
 
     return quota_bytes[0]
-
-
-def fetch_session_start_bytes(username, db_path=None):
-    db_path = db_path or sqlh.USAGE_TRACKING_DB_PATH
-
-    if not sqlh.check_if_table_exists(
-        USAGE_TRACKING_TABLE_NAME, sqlh.USAGE_TRACKING_DB_PATH
-    ) or sqlh.check_if_table_empty(
-        USAGE_TRACKING_TABLE_NAME, sqlh.USAGE_TRACKING_DB_PATH
-    ):
-        log.debug(
-            f"fetch_max_daily_usage: Table {USAGE_TRACKING_TABLE_NAME} empty or does not exist."
-        )
-        return 0
-
-    # Raise error if user doesn't exist
-    user_exists = check_if_user_exists(username)
-
-    if not user_exists:
-        log.error(
-            f"Failed fetching quota_bytes for user {username}: not found in users table."
-        )
-        raise UserNameError(f"User {username} does not exist.")
-
-    con = sqlite3.connect(
-        db_path, timeout=30, isolation_level=None
-    )  # Connects to database
-    # Need to add try blocks and error catching for all of these things at some point.
-    try:
-        cur = con.cursor()
-
-        cur.execute(
-            """
-            SELECT session_start_bytes
-            FROM users
-            WHERE username = ?
-            """,
-            (username,),
-        )
-        row = cur.fetchone()
-        if row is None:
-            log.error(
-                f"ERROR: Operation to fetch session_start_bytes failed for user {username}."
-            )
-            raise RuntimeError(
-                f"Failed to fetch session_start_bytes for user {username}."
-            )
-        session_start_bytes = row[0]
-        # log.debug(f"Session_start_bytes: {session_start_bytes}")
-        return row[0]
-    finally:
-        con.close()
 
 
 def check_if_user_in_any_group(username, db_path=None):

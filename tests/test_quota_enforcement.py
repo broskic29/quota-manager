@@ -8,7 +8,7 @@ def test_update_user_bytes_applies_delta(db_paths, monkeypatch):
 
     # mark logged in and set counters
     sqlm.login_user_usage("bob", "aa:bb", "10.0.0.2", db_path=usage_db)
-    sqlm.update_session_start_bytes("bob", 1000, db_path=usage_db)
+    sqlm.update_session_start_bytes(1000, username="bob", db_path=usage_db)
 
     # patch fetch_user_bytes to return 2500 -> delta = (2500-1000)-0 = 1500
     import quota_manager.quota_management as qm
