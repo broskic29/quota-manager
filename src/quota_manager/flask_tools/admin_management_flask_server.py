@@ -799,6 +799,10 @@ def admin_usage():
 
     users = sqlm.fetch_users_usage_rows() or []
 
+    if users:
+        users = qm.append_quotas_to_users_dicts(users)
+        log.debug(f"admin_usage: {users}")
+
     reset_str = reset_dt.strftime("%Y-%m-%d 00:00") if reset_dt else "-"
 
     log.debug(

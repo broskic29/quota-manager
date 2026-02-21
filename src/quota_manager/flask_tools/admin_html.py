@@ -1344,6 +1344,7 @@ admin_usage_template = """
             <th>User</th>
             <th>Group</th>
             <th>Daily used (MiB)</th>
+            <th>Daily quota (MiB)</th>
             <th>Monthly used (GiB)</th>
             <th>Status</th>
             <th>IP</th>
@@ -1357,6 +1358,7 @@ admin_usage_template = """
               <td><b>{{ u.username or "-" }}</b></td>
               <td>{{ u.group_name or "-" }}</td>
               <td>{{ (u.daily_mib|default(0))|round(2) }}</td>
+              <td>{{ (u.daily_quota_mib|default(0))|round(2) }}</td>
               <td>{{ (u.monthly_gib|default(0))|round(2) }}</td>
               <td>
                 {% if u.logged_in %}

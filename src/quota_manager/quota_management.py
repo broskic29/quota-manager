@@ -783,6 +783,14 @@ def update_num_entities_system_state(num_users, num_groups):
     return num_users, num_groups
 
 
+def append_quotas_to_users_dicts(users):
+    for user in users:
+        username = user["username"]
+        user_daily_quota = sqlm.fetch_high_speed_quota_for_user_usage(username)
+        user["daily_quota_mib"] = user_daily_quota / 1024**2
+    return users
+
+
 def compute_remaining_weekdays(now, reset_day):
     """Count weekdays (Mon–Fri) remaining *after* the given day in the same month."""
     tz = now.tzinfo
