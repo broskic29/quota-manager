@@ -20,6 +20,19 @@ import quota_manager.flask_tools.user_html as uhtml
 user_app = Flask(__name__)
 user_app.secret_key = "donbosco1815"
 
+
+@user_app.after_request
+def log_resp(resp):
+    log.info(
+        "HTTP %s %s UA=%r -> %s",
+        request.method,
+        request.path,
+        request.headers.get("User-Agent", ""),
+        resp.status,
+    )
+    return resp
+
+
 log = logging.getLogger(__name__)
 
 GENERAL_ERROR_MESSAGE = {
@@ -34,6 +47,8 @@ def login():
     msg = session.pop("message", "")
     error = session.pop("error", "")
     captive = session.pop("captive", False)
+
+    log.debug(f"login: captive: {captive}")
 
     if request.method == "POST":
         username = request.form["username"]
@@ -111,12 +126,18 @@ def login():
                     msg = "\nIf you are on iPhone, please press the 'cancel' button in the top right, then select 'Use Without Internet'."
                     session["message"] = msg
                     log.info(f"iPhone CNA detected for {user_mac}, returning 200")
-                    return redirect(url_for("user_dashboard", username=username))
+                    log.info(
+                        f"iPhone CNA detected for {user_mac}, directing to user dashboard"
+                    )
+                    redirect(url_for("user_dashboard", username=username))
 
                 # Android CNA
                 elif "Android" in ua:
                     log.info(f"Android CNA detected for {user_mac}, returning 204")
-                    return Response(status=204)  # <-- returns blank 204
+                    log.info(
+                        f"Android CNA detected for {user_mac}, directing to user dashboard"
+                    )
+                    redirect(url_for("user_dashboard", username=username))
 
                 # Other devices
                 else:
@@ -328,11 +349,6 @@ def apple_hotspot_detect():
     return redirect(url_for("login"))
 
 
-@user_app.route("/donboscowifi")
-def splash_page_for_search():
-    return redirect("/login", 302)
-
-
 @user_app.route("/clients3.google.com")
 @user_app.route("/connectivitycheck.gstatic.com")
 @user_app.route("/connectivitycheck.android.com")
@@ -340,6 +356,22 @@ def splash_page_for_search():
 @user_app.route("/ncsi.txt")
 def windows_ncsi():
     session["captive"] = True
+    user_ip = request.remote_addr
+
+    error = None
+
+    user_mac, error = flu.safe_call(
+        qm.mac_from_ip,
+        error,
+        GENERAL_ERROR_MESSAGE,
+        user_ip,
+    )
+
+    if error:
+        session["error"] = error
+        return redirect("/login", 302)
+
+    log.info(f"Login attempt from user at {user_mac}/{user_ip}.")
     return redirect("/login", 302)
 
 
