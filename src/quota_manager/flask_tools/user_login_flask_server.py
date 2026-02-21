@@ -166,13 +166,23 @@ def user_dashboard(username):
     msg = session.pop("message", "")
     error = session.pop("error", "")
 
-    # SESSION AUTHENTICATION CHECK (#6)
-    if session.get("username") != username:
-        return redirect(url_for("login"))
-
     USER_DASHBOARD_ERROR_MESSAGES = {
         flu.UndefinedException: f"Internal error attempting to display usage for user {username}. Please reload page.",
     }
+
+    logged_in, error = flu.safe_call(
+        sqlm.check_if_user_logged_in,
+        error,
+        USER_DASHBOARD_ERROR_MESSAGES,
+        username,
+    )
+
+    if not logged_in or error:
+        return redirect(url_for("login"))
+
+    # SESSION AUTHENTICATION CHECK (#6)
+    if session.get("username") != username:
+        return redirect(url_for("login"))
 
     quota_vals, error = flu.safe_call(
         qm.evaluate_user_bytes_against_quota,
