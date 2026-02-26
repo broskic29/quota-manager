@@ -1,5 +1,6 @@
 import argparse
 import logging
+import signal
 
 from .app import QuotaManagerApp
 from quota_manager.logging_config import configure_logging
@@ -7,6 +8,8 @@ from quota_manager.logging_config import configure_logging
 import faulthandler
 
 faulthandler.enable()
+
+log = logging.getLogger(__name__)
 
 
 def parse_args():
@@ -104,4 +107,12 @@ def main():
     )
 
     app = QuotaManagerApp()
+
+    def _request_shutdown(signum, frame):
+        log.warning("Got signal %s, shutting down...", signum)
+        app.stop_event.set()
+
+    signal.signal(signal.SIGTERM, _request_shutdown)
+    signal.signal(signal.SIGINT, _request_shutdown)
+
     app.start()

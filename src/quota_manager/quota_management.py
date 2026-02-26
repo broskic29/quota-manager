@@ -214,8 +214,12 @@ def calculate_byte_delta(user_bytes, username=None, system_name=None, db_path=No
         # defensive: should not happen, but never subtract usage
         if username:
             log.warning(
-                f"Negative byte delta for user {username}: {byte_delta}. Clamping to 0."
+                f"Negative byte delta for user {username}: {byte_delta}. Reeintializing session start bytes and total session bytes."
             )
+            sqlm.update_session_start_bytes(
+                user_bytes, username=username, db_path=db_path
+            )
+            sqlm.wipe_session_total_bytes(username=username)
         else:
 
             config = sqlm.fetch_active_config()
@@ -225,8 +229,13 @@ def calculate_byte_delta(user_bytes, username=None, system_name=None, db_path=No
                     f"calculate_byte_delta: Table {sqlm.CONFIGS_TABLE_NAME} empty or does not exist."
                 )
                 log.warning(
-                    f"Negative byte delta for system: {byte_delta}. Clamping to 0."
+                    f"Negative byte delta for system: {byte_delta}. Reeintializing session start bytes and total session bytes."
                 )
+
+                sqlm.update_session_start_bytes(
+                    user_bytes, system_name=system_name, db_path=db_path
+                )
+                sqlm.wipe_session_total_bytes(system_name=system_name)
 
                 return 0
             system_name = config["system_name"]
