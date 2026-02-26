@@ -260,7 +260,7 @@ def calculate_hypothetical_group_quotas_for_today(
     with QUOTA_LOCK:
 
         total_monthly_bytes_purchased = sqlm.fetch_config_total_bytes()
-        total_monthly_bytes_used = sqlm.fetch_monthly_usage_bytes()
+        total_monthly_bytes_used = sqlm.fetch_total_system_monthly_usage_bytes()
 
         if total_monthly_bytes_used is None:
             return
@@ -311,7 +311,9 @@ def calculate_hypothetical_group_quotas_for_today(
             group_quotas_dict = sqt.quota_vector_generator(quota_config_dict)["v_dict"]
             log.info(f"New data quotas: {group_quotas_dict}")
         except sqt.QuotaConfigError as e:
-            log.debug(f"update_group_quotas: Failed to generate quotas dict: {e}")
+            log.debug(
+                f"calculate_hypothetical_group_quotas_for_today: Failed to generate quotas dict: {e}"
+            )
             raise sqt.QuotaConfigError(f"Failed to generate quotas dict: {e}")
 
         if group_quotas_dict is None:
@@ -711,71 +713,6 @@ def enforce_quotas_all_users(throttling: bool, db_path=None):
             enforce_quota_single_user(username, throttling, db_path)
 
 
-# Used to recompute quotas for all groups based on data used and number of weekdays
-# left in the month.
-def update_group_quotas(now, reset_day):
-    with QUOTA_LOCK:
-
-        total_monthly_bytes_purchased = sqlm.fetch_config_total_bytes()
-        total_monthly_bytes_used = sqlm.fetch_monthly_usage_bytes()
-
-        if total_monthly_bytes_used is None:
-            return
-
-        total_bytes_available = max(
-            total_monthly_bytes_purchased - total_monthly_bytes_used, 0
-        )
-
-        if total_monthly_bytes_purchased is None or total_monthly_bytes_used is None:
-            log.debug(
-                f"update_group_quotas: Failed to update group quotas, total_monthly_bytes_purchased and/or total_bytes_used are empty."
-            )
-            raise QuotaAllottmentError(
-                "update_group_quotas: Failed to update group quotas, total_monthly_bytes_purchased and/or total_bytes_used are empty. Please check configuration."
-            )
-
-        log.debug(f"Total bytes available for rest of month: {total_bytes_available}.")
-
-        total_weekdays_left = compute_remaining_weekdays(now, reset_day)
-
-        log.debug(f"Total weekdays remaining in month: {total_weekdays_left}.")
-
-        total_daily_bytes = total_bytes_available / total_weekdays_left
-
-        log.debug(f"Total bytes available for today: {total_daily_bytes}.")
-
-        group_config_dict = gen_group_config_dict_for_sqt(total_daily_bytes)
-
-        if not group_config_dict:
-            log.info("update_group_quotas: No active groups; skipping quota recompute.")
-            return
-
-        quota_config_dict = sqt.gen_quota_config_dict(
-            total_daily_bytes, group_config_dict
-        )
-        log.debug(f"Quota config dict: {quota_config_dict}")
-
-        try:
-            group_quotas_dict = sqt.quota_vector_generator(quota_config_dict)["v_dict"]
-            log.info(f"New data quotas: {group_quotas_dict}")
-        except sqt.QuotaConfigError as e:
-            log.debug(f"update_group_quotas: Failed to generate quotas dict: {e}")
-            raise sqt.QuotaConfigError(f"Failed to generate quotas dict: {e}")
-
-        if group_quotas_dict is None:
-            log.error(
-                "Impossible to calculate quota for user with current constraints. Please change desired quota ratio for group."
-            )
-            return
-
-        apply_new_quotas(group_quotas_dict)
-
-        log.info(f"Updated daily quotas for all groups.")
-
-        log.debug(f"New user quotas applied:")
-        sqlh.log_all_table_information(sqlm.GROUP_TABLE_NAME)
-
-
 def update_num_entities_system_state(num_users, num_groups):
     usernames = sqlm.fetch_all_usernames_usage()
     groups = sqlm.get_groups_usage()
@@ -1111,18 +1048,6 @@ def change_user_group(username, new_group_name, old_group_name):
             raise sqlm.GroupNameError(
                 f"Failed to add user {username} to group {new_group_name}: Group does not exist."
             )
-
-        # Testing removing these...
-        # group_quotas = calculate_hypothetical_group_quotas_for_today(
-        #     group_name=new_group_name,
-        #     reset_day=ACCOUNT_BILLING_DAY,
-        #     old_group_name=old_group_name,
-        # )
-        # log.debug(f"Hypothetical quota available for groups: {group_quotas}")
-
-        # apply_new_quotas(group_quotas)
-        # log.debug(f"Updated quotas for all groups:")
-        # sqlh.log_all_table_information(sqlm.GROUP_TABLE_NAME)
 
         sqlm.remove_user_from_group_usage(username)
         log.debug(f"Removed user {username} from group {old_group_name}.")
@@ -1605,7 +1530,9 @@ def update_daily_byte_budget(now=None):
         tz = dt.timezone(dt.timedelta(hours=sqlh.UTC_OFFSET))
         now = dt.datetime.now(tz)
 
-    total_monthly_bytes = sqlm.fetch_config_total_bytes()
+    total_monthly_bytes = (
+        sqlm.fetch_config_total_bytes() - sqlm.fetch_total_system_monthly_usage_bytes()
+    )
 
     weekdays_left = compute_remaining_weekdays(now, ACCOUNT_BILLING_DAY)
 
