@@ -243,6 +243,11 @@ def calculate_byte_delta(user_bytes, username=None, system_name=None, db_path=No
             log.warning(
                 f"Negative byte delta for system '{system_name}': {byte_delta}. Clamping to 0."
             )
+
+            sqlm.update_session_start_bytes(
+                user_bytes, system_name=system_name, db_path=db_path
+            )
+            sqlm.wipe_session_total_bytes(system_name=system_name)
         return 0
 
     return byte_delta
@@ -1195,7 +1200,6 @@ def log_in_user(username, user_ip, user_mac):
                 # Update db with start bytes
                 sqlm.update_session_start_bytes(
                     session_start_bytes,
-                    system_name=session_start_bytes,
                     username=username,
                 )
 

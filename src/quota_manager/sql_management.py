@@ -1986,7 +1986,9 @@ def update_session_start_bytes(
     db_path = db_path or sqlh.USAGE_TRACKING_DB_PATH
 
     if (username is None and system_name is None) or (username and system_name):
-        log.error("fetch_session_bytes: Must specify either username or system name.")
+        log.error(
+            "update_session_start_bytes: Must specify either username or system name."
+        )
         raise ValueError("Must specify either username or system name.")
 
     if username:
