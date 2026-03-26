@@ -1,4 +1,4 @@
-# quota_manager
+# quota-manager
 Python application for OpenWRT quota management and throttling.
 
 Meant to run as a service on an OpenWRT-enabled router to manage network traffic,
