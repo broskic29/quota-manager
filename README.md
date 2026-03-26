@@ -4,7 +4,7 @@ Python application for OpenWRT quota management and throttling.
 Meant to run as a service on an OpenWRT-enabled router to manage network traffic,
 providing dynamic data control on a per-user basis.
 
-Paired with: https://github.com/broskic29/openwrt-builder/tree/release/v1.0.0
+Paired with: https://github.com/broskic29/openwrt-builder
 
 To run:
 pipenv run quota_manager
