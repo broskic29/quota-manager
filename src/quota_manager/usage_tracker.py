@@ -83,20 +83,29 @@ def daily_events(now):
             return  # admin is changing groups/quotas; skip tick
         try:
             sqlm.usage_daily_wipe()
+            log.info(f"Daily usage wipe, {now}")
 
             qm.log_out_all_users()
+            log.info("All users logged out.")
+
+            qm.nftm_flush_set_ghosts()
+            log.info("Nftm set ghosts flushed.")
 
             qm.wipe_ip_neigh_db()
+            log.info("IP neigh db wiped")
 
             qm.reset_throttling_and_packet_dropping_all_users()
+            log.info("Throttling and packet dropping reset for all users.")
 
             group_quotas_dict = qm.calculate_hypothetical_group_quotas_for_today(
                 now=now, reset_day=qm.ACCOUNT_BILLING_DAY
             )
 
             qm.apply_new_quotas(group_quotas_dict)
+            log.info("New daily quotas applied.")
 
             qm.update_daily_byte_budget(now)
+            log.info("Quota byte budget updated.")
 
         except Exception as e:
             log.error(f"daily_events: Failed to execute daily events, error: {e}")
@@ -170,7 +179,9 @@ def usage_updater(stop_event: threading.Event):
                     system_daily_wiped = qm.system_daily_wipe_check(now)
 
                     if not system_daily_wiped:
-                        log.debug("System not daily wiped, wiping system...")
+                        log.info(
+                            "System daily wipe check returned false, wiping system..."
+                        )
 
                         daily_events(now)
                         qm.update_system_date(now)
@@ -184,7 +195,9 @@ def usage_updater(stop_event: threading.Event):
                 try:
                     system_monthly_wiped = qm.system_monthly_wipe_check()
                     if not system_monthly_wiped:
-                        log.debug("System not monthly wiped, wiping system...")
+                        log.debug(
+                            "System monthly wipe check returned false, wiping system..."
+                        )
 
                         monthly_events()
                         qm.update_monthly_wipe()

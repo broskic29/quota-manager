@@ -168,10 +168,10 @@ def safe_call(fn, error, msgs, *args, **kwargs):
         mapped = msgs.get(matched_key, msgs.get(UndefinedException))
 
         if mapped is None:
-            log.exception(e)
+            log.debug(e)
             return None, error_appender(error, e)
         else:
-            log.exception(mapped)
+            log.debug(mapped)
             return None, error_appender(error, mapped)
     except Exception:
         mapped = msgs.get(UndefinedException, "Internal error.\n")

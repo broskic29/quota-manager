@@ -767,8 +767,8 @@ def compute_remaining_weekdays(now, reset_day):
 def calculate_next_monthly_reset(now, reset_day):
     """Count weekdays (Mon–Fri) remaining *after* the given day in the same month."""
 
-    if now.day < reset_day:
-        next_monthly = next_monthly.replace(day=reset_day)
+    if now.day <= reset_day:
+        next_monthly = now.replace(day=reset_day)
     else:
         next_monthly = now + dt.timedelta(days=(32 - now.day))
         next_monthly = next_monthly.replace(day=reset_day)
@@ -1075,6 +1075,12 @@ def log_in_user(username, user_ip, user_mac):
 
         if config["mac_set_limitation"]:
             if user_mac not in config["allowed_macs_list"]:
+                log.debug(
+                    f"qm.log_in_user: User mac not in allowed macs list. User mac: {user_mac}"
+                )
+                log.debug(
+                    f"qm.log_in_user: allowed_macs_list: {config['allowed_macs_list']}"
+                )
                 raise RestrictedUserError("User device not in list of allowed devices.")
 
         if sqlm.check_if_user_exists(username):
@@ -1152,21 +1158,20 @@ def log_out_user(username):
 
     with USER_LOCKS[username]:
 
-        if sqlm.check_if_user_logged_in(username):
-            try:
-                remove_user_from_nftables(username)
+        try:
+            remove_user_from_nftables(username)
 
-                remove_user_from_ip_timeouts(username)
+            remove_user_from_ip_timeouts(username)
 
-                sqlm.wipe_session_total_bytes(username=username)
+            sqlm.wipe_session_total_bytes(username=username)
 
-                sqlm.logout_user_usage(username)
+            sqlm.logout_user_usage(username)
 
-                log.info(f"Successfully logged out user {username}.")
+            log.info(f"Successfully logged out user {username}.")
 
-            except Exception as e:
-                log.error(f"Error logging out user {username}: {e}")
-                return False
+        except Exception as e:
+            log.error(f"Error logging out user {username}: {e}")
+            return False
 
         return True
 
@@ -1178,6 +1183,13 @@ def log_out_all_users():
         for username in usernames:
             log_out_user(username)
         log.info("All users logged out.")
+
+
+def nftm_flush_set_ghosts():
+    """Flush all IP addresses from sets that were never logged in."""
+    nftm.flush_set(nftm.TABLE_FAMILY, nftm.TABLE_NAME, nftm.AUTH_SET_NAME)
+    nftm.flush_set(nftm.TABLE_FAMILY, nftm.TABLE_NAME, nftm.HIGH_SPEED_SET_NAME)
+    nftm.flush_set(nftm.TABLE_FAMILY, nftm.TABLE_NAME, nftm.THROTTLE_SET_NAME)
 
 
 def delete_user_from_system(username):
@@ -1459,7 +1471,7 @@ def ip_timeout_enforcer():
                     f"ip_timeout_enforcer: Deleting user at {ip_addr} from ip_timeouts table"
                 )
             else:
-                log.error(
+                log.debug(
                     f"ip_timeout_enforcer: ERROR: Failed to enforce timeout for user at {ip_addr}"
                 )
 

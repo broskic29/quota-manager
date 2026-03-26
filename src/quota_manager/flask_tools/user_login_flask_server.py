@@ -23,7 +23,7 @@ user_app.secret_key = "donbosco1815"
 
 @user_app.after_request
 def log_resp(resp):
-    log.info(
+    log.debug(
         "HTTP %s %s UA=%r -> %s",
         request.method,
         request.path,
@@ -112,7 +112,7 @@ def login():
             if captive:
                 # Apple / Mac (non-iPhone)
                 if ("Apple" in ua or "Mac" in ua) and "iPhone" not in ua:
-                    log.info(
+                    log.debug(
                         f"Apple device detected for {user_mac}, returning regular page"
                     )
                     msg = (
@@ -125,23 +125,23 @@ def login():
                 elif "iPhone" in ua:
                     msg = "\nIf you are on iPhone, please press the 'cancel' button in the top right, then select 'Use Without Internet'."
                     session["message"] = msg
-                    log.info(f"iPhone CNA detected for {user_mac}, returning 200")
-                    log.info(
+                    log.debug(f"iPhone CNA detected for {user_mac}, returning 200")
+                    log.debug(
                         f"iPhone CNA detected for {user_mac}, directing to user dashboard"
                     )
                     redirect(url_for("user_dashboard", username=username))
 
                 # Android CNA
                 elif "Android" in ua:
-                    log.info(f"Android CNA detected for {user_mac}, returning 204")
-                    log.info(
+                    log.debug(f"Android CNA detected for {user_mac}, returning 204")
+                    log.debug(
                         f"Android CNA detected for {user_mac}, directing to user dashboard"
                     )
                     redirect(url_for("user_dashboard", username=username))
 
                 # Other devices
                 else:
-                    log.info(
+                    log.debug(
                         f"Other device detected for {user_mac}, returning regular page"
                     )
                     msg = (
@@ -153,7 +153,7 @@ def login():
             return redirect(url_for("user_dashboard", username=username))
 
         else:
-            log.info(f"Login unsuccessful. Invalid username or password")
+            log.debug(f"Login unsuccessful. Invalid username or password")
             error += flu.error_appender(error, "Invalid username or password")
             return render_template_string(uhtml.login_form, error=error)
 

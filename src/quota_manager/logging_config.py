@@ -44,7 +44,7 @@ def configure_logging(
 
     logger = logging.getLogger()
     logger.handlers.clear()
-    logger.setLevel(logging.INFO)
+    logger.setLevel(log_level)
 
     fmt = logging.Formatter(
         "%(asctime)s [%(levelname)s] "

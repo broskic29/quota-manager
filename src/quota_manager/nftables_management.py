@@ -112,7 +112,7 @@ def get_bytes_from_user(user_ip):
     ]
 
     if len(user_bytes) < 1:
-        log.error(
+        log.debug(
             f"ERROR: Operation to fetch usage failed for user {user_ip}: IP address not in set."
         )
         raise sqlh.IPAddressError(f"Usage bytes undefined for user {user_ip}")

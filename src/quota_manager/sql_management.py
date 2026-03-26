@@ -24,7 +24,7 @@ NOT_OVER_QUOTA = 0
 OVER_QUOTA = 1
 
 IP_POLLING = 30
-IP_TIMEOUT = int(3 * IP_POLLING)
+IP_TIMEOUT = int(4 * IP_POLLING)
 
 
 class UserNameError(Exception):
@@ -142,7 +142,7 @@ def init_usage_db():
             high_speed_quota INTEGER NOT NULL DEFAULT 0,
             throttled_quota INTEGER NOT NULL DEFAULT 0,
             desired_quota_ratio REAL NOT NULL DEFAULT 0.0,
-            min_quota_ratio REAL NOT NULL DEFAULT 0.1,
+            min_quota_ratio REAL NOT NULL DEFAULT 0.0,
             max_num_bytes INTEGER,
             min_num_bytes INTEGER NOT NULL DEFAULT 0.0,
             mse_weights REAL,
@@ -595,6 +595,24 @@ def update_group_quota(group_name, quota_byte_value, db_path=None):
     con.close()
 
 
+def update_min_quota_ratio(group_name, min_quota_ratio, db_path=None):
+    db_path = db_path or sqlh.USAGE_TRACKING_DB_PATH
+    con = sqlite3.connect(
+        db_path, timeout=30, isolation_level=None
+    )  # Connects to database
+    cur = con.cursor()
+    cur.execute(
+        f"""
+            UPDATE {GROUP_TABLE_NAME}
+            SET min_quota_ratio = ?
+            WHERE group_name = ?
+            """,
+        (min_quota_ratio, group_name),
+    )
+    con.commit()
+    con.close()
+
+
 def create_user_usage(
     username,
     group_name,
@@ -804,7 +822,7 @@ def logout_user_usage(username, db_path=None):
             (LOGGED_OUT, username),
         )
 
-        log.info(f"User {username} successfully logged out.")
+        log.debug(f"User {username} successfully logged out.")
 
         con.commit()
         con.close()
@@ -2695,7 +2713,7 @@ def insert_ip_addr_ip_db(user_ip, user_mac, now, db_path=None):
     con.commit()
     con.close()
 
-    log.info(f"Inserted user at {user_ip} into ip_timeouts table.")
+    log.debug(f"Inserted user at {user_ip} into ip_timeouts table.")
 
 
 def select_ip_row(ip_addr, db_path=None):
