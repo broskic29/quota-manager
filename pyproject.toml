@@ -1,0 +1,21 @@
+[build-system]
+requires = ["setuptools", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "quota_manager"
+version = "0.1.0"
+description = ""
+authors = [
+    { name = "Ambroise", email = "ambroisecuru@gmail.com" }
+]
+
+[project.scripts]
+quota_manager = "quota_manager.cli:main"
+quota_tools = "quota_manager.quota_tools.smart_quota_tool:main"
+
+[tool.pytest.ini_options]
+markers = [
+  "integration: requires root + nft + network namespace",
+]
+addopts = "-m 'not integration'"
