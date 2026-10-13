@@ -1,0 +1,36 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Color Indicator</title>
+
+    <style>
+    #indicator {
+        width: 40px;
+        height: 40px;
+        border-radius: 50%;
+        background-color: gray;
+        margin-bottom: 10px;
+    }
+    </style>
+  
+</head>
+
+<body>
+
+    <div id="indicator">
+    </div>
+
+    <button onclick="changeColor()">Change Color</button>
+
+    <script>
+        let colors = ["red", "yellow", "green", "blue"];
+        let color = 0;
+
+        function changeColor() {
+            document.getElementById("indicator").style.backgroundColor = colors[color];
+            color = (color + 1) % colors.length;
+        }
+    </script>
+
+</body>
+</html>

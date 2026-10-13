@@ -444,6 +444,20 @@ def checkpoint_user_usage(username, db_path=None):
         return checkpoint.get(username)
 
 
+def checkpoint_all_logged_in_users(db_path=None):
+    """Persist the latest available counter sample for each logged-in user."""
+    db_path = db_path or sqlh.USAGE_TRACKING_DB_PATH
+    checkpoints = {}
+
+    for username in sqlm.fetch_all_usernames_usage(db_path) or []:
+        if sqlm.check_if_user_logged_in(username, db_path=db_path):
+            checkpoints[username] = checkpoint_user_usage(
+                username, db_path=db_path
+            )
+
+    return checkpoints
+
+
 def update_all_users_bytes(old_usage_dict, db_path=sqlh.USAGE_TRACKING_DB_PATH):
 
     usage_dict = {}
@@ -1612,21 +1626,42 @@ def wipe_ip_neigh_db():
     log.info("IP neigh db wiped.")
 
 
-def system_daily_wipe_check(now):
-    date_str = now.date().isoformat()
+def system_daily_wipe_check(now, db_path=None):
+    """Return whether no forward daily reset is due.
 
-    system_state = sqlm.fetch_system_state()
+    A clock that is behind the persisted accounting date is untrusted and must
+    never trigger a destructive reset.
+    """
+    db_path = db_path or sqlh.USAGE_TRACKING_DB_PATH
+    current_date = now.date()
+
+    system_state = sqlm.fetch_system_state(db_path)
 
     if system_state is None:
         sqlm.init_freeradius_db()
         sqlm.init_usage_db()
         return True
 
-    system_date = system_state.get("system_date")
+    system_date_text = system_state.get("system_date")
+    try:
+        system_date = dt.date.fromisoformat(system_date_text)
+    except (TypeError, ValueError):
+        log.error(
+            "Invalid persisted system date %r; deferring daily reset.",
+            system_date_text,
+        )
+        return True
 
-    if date_str != system_date:
-        return False
-    return True
+    if current_date < system_date:
+        log.warning(
+            "Current date %s is earlier than persisted system date %s; "
+            "deferring daily reset until the wall clock is trustworthy.",
+            current_date.isoformat(),
+            system_date.isoformat(),
+        )
+        return True
+
+    return current_date == system_date
 
 
 def system_monthly_wipe_check():

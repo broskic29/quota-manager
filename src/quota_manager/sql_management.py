@@ -2183,6 +2183,53 @@ def usage_daily_wipe(db_path=None):
     log.info("Daily wipe complete.")
 
 
+def usage_daily_wipe_and_advance_date(
+    new_system_date, expected_system_date, db_path=None
+):
+    """Atomically clear daily totals and advance the completed-reset date."""
+    db_path = db_path or sqlh.USAGE_TRACKING_DB_PATH
+    config = fetch_active_config(db_path)
+    system_name = config["system_name"]
+
+    con = sqlite3.connect(db_path, timeout=30, isolation_level=None)
+    try:
+        cur = con.cursor()
+        cur.execute("BEGIN IMMEDIATE")
+        cur.execute(
+            f"""
+            UPDATE {SYSTEM_STATE_TABLE_NAME}
+            SET total_daily_bytes = 0,
+                system_date = ?
+            WHERE system_name = ? AND system_date = ?
+            """,
+            (new_system_date, system_name, expected_system_date),
+        )
+
+        if cur.rowcount != 1:
+            con.rollback()
+            return False
+
+        cur.execute(
+            f"""
+            UPDATE {USAGE_TRACKING_TABLE_NAME}
+            SET daily_usage_bytes = 0
+            """
+        )
+        con.commit()
+    except Exception:
+        con.rollback()
+        raise
+    finally:
+        con.close()
+
+    log.info(
+        "Daily wipe complete; system date advanced from %s to %s.",
+        expected_system_date,
+        new_system_date,
+    )
+    return True
+
+
 def usage_monthly_wipe(db_path=None):
     db_path = db_path or sqlh.USAGE_TRACKING_DB_PATH
     con = sqlite3.connect(

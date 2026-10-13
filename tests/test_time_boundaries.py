@@ -13,11 +13,12 @@ def test_day_rollover_resets_daily_not_monthly_and_quota_state_recovers(
 
     # Patch out side effects from daily_events
     monkeypatch.setattr(qm, "log_out_all_users", lambda *a, **k: None)
+    monkeypatch.setattr(qm, "checkpoint_all_logged_in_users", lambda *a, **k: {})
+    monkeypatch.setattr(qm, "nftm_flush_set_ghosts", lambda *a, **k: None)
     monkeypatch.setattr(qm, "wipe_ip_neigh_db", lambda *a, **k: None)
     monkeypatch.setattr(
         qm, "reset_throttling_and_packet_dropping_all_users", lambda *a, **k: None
     )
-    monkeypatch.setattr(qm, "update_group_quotas", lambda *a, **k: None)
 
     # Setup: one user, one group with a quota
     sqlm.create_group_usage("alpha", 1.0, db_path=usage_db)
@@ -58,13 +59,17 @@ def test_day_rollover_resets_daily_not_monthly_and_quota_state_recovers(
             "UPDATE users SET daily_usage_bytes=?, exceeds_quota=1 WHERE username=?",
             (2000, "bob"),
         )
+        con.execute("UPDATE system_state SET system_date='2026-02-09'")
 
     # After midnight, daily wipe should reset daily_usage but not monthly_usage
     tz = dt.timezone(dt.timedelta(hours=2))
     now_after_midnight = dt.datetime(2026, 2, 10, 0, 1, tzinfo=tz)
 
-    ut.daily_events(now=now_after_midnight)
+    outcome = ut.reconcile_daily_reset(
+        now_after_midnight, startup_elapsed_seconds=600, db_path=usage_db
+    )
 
+    assert outcome == ut.DAILY_RESET_COMPLETED
     assert sqlm.fetch_daily_bytes_usage("bob", db_path=usage_db) == 0
     assert (
         sqlm.fetch_monthly_bytes_usage("bob", db_path=usage_db) == 700
