@@ -9,10 +9,18 @@ except (ImportError, FileNotFoundError):
 
 try:
     from pyroute2 import IPRoute
-    from pyroute2.netlink.rtnl.ndmsg import NUD_REACHABLE
+    from pyroute2.netlink.rtnl.ndmsg import (
+        NUD_DELAY,
+        NUD_PROBE,
+        NUD_REACHABLE,
+        NUD_STALE,
+    )
 except (ImportError, FileNotFoundError):
     IPRoute = None
-    NUD_REACHABLE = None
+    NUD_DELAY = 0
+    NUD_PROBE = 0
+    NUD_REACHABLE = 0
+    NUD_STALE = 0
 
 from math import fsum
 
@@ -25,6 +33,8 @@ from quota_manager.quota_tools import smart_quota_tool as sqt
 log = logging.getLogger(__name__)
 
 ip = IPRoute() if IPRoute is not None else None
+
+USABLE_NUD_STATES = NUD_REACHABLE | NUD_STALE | NUD_DELAY | NUD_PROBE
 
 ACCOUNT_BILLING_DAY = 7
 
@@ -1390,18 +1400,24 @@ def check_quota_ratio_legality(desired_quota_ratio, group_name=None, tol=1e-3):
 
 def poll_ip_neigh():
     now = time.monotonic()
+    if ip is None:
+        return []
+
     neighbors = ip.get_neighbours()
+    observations = []
 
     for n in neighbors:
         try:
-            if n["state"] & NUD_REACHABLE:
-                ip_addr = dict(n.get("attrs")).get("NDA_DST")
-                mac_addr = dict(n.get("attrs")).get("NDA_LLADDR")
-                return ip_addr, mac_addr, now
+            if n["state"] & USABLE_NUD_STATES:
+                attrs = dict(n.get("attrs") or [])
+                ip_addr = attrs.get("NDA_DST")
+                mac_addr = attrs.get("NDA_LLADDR")
+                if ip_addr is not None and mac_addr is not None:
+                    observations.append((ip_addr, mac_addr, now))
         except Exception as e:
             log.error(f"Unexpected error updating ip timeout database for {n}: {e}.")
 
-    return None, None, None
+    return observations
 
 
 def ip_timeout_updater(ip_addr, mac_addr, now, first_pass=False):
@@ -1420,13 +1436,9 @@ def ip_timeout_updater(ip_addr, mac_addr, now, first_pass=False):
                 f"ip_timeout_updater: table information for user at {ip_addr}/{mac_addr}: {row}"
             )
 
-            last_timestamp = row[3]
-
-            ip_timeout = sqlm.IP_TIMEOUT * 3 if first_pass else sqlm.IP_TIMEOUT
-
-            timeout = 1 if now - last_timestamp > ip_timeout else 0
-
-            sqlm.update_ip_db(ip_addr, now, timeout)
+            # A current observation is evidence of liveness, regardless of how
+            # old the previously stored timestamp was.
+            sqlm.update_ip_db(ip_addr, now, 0)
 
             log.debug(f"Updated timeout for user {ip_addr}/{mac_addr}.")
         else:
@@ -1450,16 +1462,21 @@ def ip_timeout_enforcer():
 
     log.debug(f"ip_timeout_enforcer: IP and MAC addrs in db: {ip_and_mac_addrs}")
 
+    now = time.monotonic()
+
     for ip_addr, mac_addr in ip_and_mac_addrs:
         row = sqlm.select_ip_row(ip_addr)
 
-        timeout = row[4]
+        if row is None:
+            continue
+
+        last_timestamp = row[3]
 
         log.debug(
             f"ip_timeout_enforcer: table information for user at {ip_addr}: {row}"
         )
 
-        if timeout:
+        if last_timestamp is not None and now - last_timestamp > sqlm.IP_TIMEOUT:
 
             success = ip_enforce_timeout(ip_addr, mac_addr)
 
