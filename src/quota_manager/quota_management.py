@@ -116,8 +116,10 @@ def fetch_user_bytes(username):
         log.debug(f"High speed users set empty.")
         return None
     except sqlh.IPAddressError as e:
-        log.debug(f"fetch_user_bytes: User {username} ip address not in set {e}.")
-        log_out_user(username)
+        log.warning(
+            f"fetch_user_bytes: Usage counter unavailable for user {username} "
+            f"at IP {user_ip}: {e}. Skipping this accounting tick."
+        )
         return None
 
     # log.debug(f"User bytes: {user_bytes}")
