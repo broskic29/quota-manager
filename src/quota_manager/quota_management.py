@@ -354,16 +354,29 @@ def calculate_total_daily_usage():
 
 def update_user_bytes(username, usage_dict={}, db_path=None):
     db_path = db_path or sqlh.USAGE_TRACKING_DB_PATH
-    if sqlm.check_if_user_logged_in(username):
-        user_bytes = fetch_user_bytes(username)
-        if user_bytes is not None:
-            byte_delta = calculate_byte_delta(user_bytes, username)
-            sqlm.update_user_bytes_usage(byte_delta, username, db_path)
-            usage_dict[username] = user_bytes
-    else:
-        pass
+    with USER_LOCKS[username]:
+        if sqlm.check_if_user_logged_in(username, db_path):
+            user_bytes = fetch_user_bytes(username)
+            if user_bytes is not None:
+                byte_delta = calculate_byte_delta(
+                    user_bytes, username=username, db_path=db_path
+                )
+                if byte_delta > 0:
+                    sqlm.update_user_bytes_usage(byte_delta, username, db_path)
+                usage_dict[username] = user_bytes
 
     return usage_dict
+
+
+def checkpoint_user_usage(username, db_path=None):
+    """Persist the latest available high-speed counter sample for a user."""
+    db_path = db_path or sqlh.USAGE_TRACKING_DB_PATH
+    with USER_LOCKS[username]:
+        if not sqlm.check_if_user_exists(username, db_path=db_path):
+            return None
+
+        checkpoint = update_user_bytes(username, usage_dict={}, db_path=db_path)
+        return checkpoint.get(username)
 
 
 def update_all_users_bytes(old_usage_dict, db_path=sqlh.USAGE_TRACKING_DB_PATH):
@@ -374,7 +387,9 @@ def update_all_users_bytes(old_usage_dict, db_path=sqlh.USAGE_TRACKING_DB_PATH):
     if usernames:
         for username in usernames:
             if not sqlm.check_if_user_exceeds_quota(username):
-                usage_dict = update_user_bytes(username, usage_dict)
+                usage_dict = update_user_bytes(
+                    username, usage_dict, db_path=db_path
+                )
 
     if usage_dict:
         # log.debug(usage_dict)
@@ -409,35 +424,37 @@ def update_total_system_bytes(db_path=sqlh.USAGE_TRACKING_DB_PATH):
 
 
 def throttle_single_user(username, user_ip=None):
+    with USER_LOCKS[username]:
+        if user_ip is None:
+            try:
+                user_ip = sqlm.fetch_user_ip_address_usage(username)
+            except sqlm.UserNameError:
+                log.debug(
+                    f"Failed to reset throttling for user {username}. User does not exist."
+                )
+                user_ip = None
 
-    if user_ip is None:
-        try:
-            user_ip = sqlm.fetch_user_ip_address_usage(username)
-        except sqlm.UserNameError:
-            log.debug(
-                f"Failed to reset throttling for user {username}. User does not exist."
-            )
-            user_ip = None
-
-    if user_ip:
-        nftm.throttle_ip(user_ip)
-        log.debug(f"User {username} throttled.")
+        if user_ip:
+            checkpoint_user_usage(username)
+            nftm.throttle_ip(user_ip)
+            log.debug(f"User {username} throttled.")
 
 
 def drop_single_user(username, user_ip=None):
+    with USER_LOCKS[username]:
+        if user_ip is None:
+            try:
+                user_ip = sqlm.fetch_user_ip_address_usage(username)
+            except sqlm.UserNameError:
+                log.debug(
+                    f"Failed to reset throttling for user {username}. User does not exist."
+                )
+                user_ip = None
 
-    if user_ip is None:
-        try:
-            user_ip = sqlm.fetch_user_ip_address_usage(username)
-        except sqlm.UserNameError:
-            log.debug(
-                f"Failed to reset throttling for user {username}. User does not exist."
-            )
-            user_ip = None
-
-    if user_ip:
-        nftm.drop_ip(user_ip)
-        log.debug(f"Packets from user {username} dropped.")
+        if user_ip:
+            checkpoint_user_usage(username)
+            nftm.drop_ip(user_ip)
+            log.debug(f"Packets from user {username} dropped.")
 
 
 def make_single_user_high_speed(username, user_ip=None):
@@ -543,6 +560,13 @@ def remove_user_from_nftables(username=None, user_ip=None):
                     log.info(f"User {username} doesn't exist.")
 
         if user_ip is not None:
+            if (
+                username is not None
+                and sqlm.check_if_user_exists(username)
+                and sqlm.check_if_user_logged_in(username)
+            ):
+                checkpoint_user_usage(username)
+
             nftm.operation_on_set_element(
                 "delete",
                 nftm.TABLE_FAMILY,
@@ -973,6 +997,12 @@ def delete_user_from_set(username, set_name):
         user_ip = fetch_user_ip(username)
 
         if user_ip is not None:
+            if (
+                set_name == nftm.HIGH_SPEED_SET_NAME
+                and sqlm.check_if_user_logged_in(username)
+            ):
+                checkpoint_user_usage(username)
+
             nftm.operation_on_set_element(
                 "delete",
                 nftm.TABLE_FAMILY,
