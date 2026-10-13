@@ -155,8 +155,7 @@ def usage_updater(stop_event: threading.Event):
 
     system_name = config["system_name"]
 
-    qm.initialize_session_start_bytes_for_system(system_name=system_name)
-    sqlm.wipe_session_total_bytes(system_name=system_name)
+    qm.reconcile_system_usage_on_startup(system_name=system_name)
 
     while not stop_event.is_set():
         if stop_event.wait(USAGE_UPDATE_INTERVAL):

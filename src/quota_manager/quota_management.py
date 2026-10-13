@@ -165,6 +165,71 @@ def initialize_session_start_bytes_for_system(system_name):
     sqlm.update_session_start_bytes(system_session_start_bytes, system_name=system_name)
 
 
+def reconcile_system_usage_on_startup(system_name, db_path=None):
+    """Reconcile a persisted system counter checkpoint after a process restart."""
+    db_path = db_path or sqlh.USAGE_TRACKING_DB_PATH
+
+    try:
+        system_bytes = nftm.get_system_bytes_subprocess(
+            nftm.TABLE_FAMILY,
+            nftm.TABLE_NAME,
+            nftm.QUOTA_MANAGER_FORWARD_CHAIN_NAME,
+            nftm.WAN_IFACE_NAME,
+        )
+    except Exception as e:
+        log.error(
+            "Failed to reconcile system usage at startup; preserving the saved "
+            f"counter checkpoint: {e}"
+        )
+        return None
+
+    system_state = sqlm.fetch_system_state(db_path)
+    session_start_bytes = (
+        system_state.get("session_start_bytes") if system_state else None
+    )
+    session_total_bytes = (
+        system_state.get("session_total_bytes") if system_state else None
+    )
+
+    committed_totals = (
+        system_state.get("total_daily_bytes") if system_state else None,
+        system_state.get("total_monthly_bytes") if system_state else None,
+        system_state.get("all_time_bytes") if system_state else None,
+        system_state.get("total_system_monthly_bytes") if system_state else None,
+    )
+    has_usable_checkpoint = (
+        session_start_bytes is not None
+        and session_total_bytes is not None
+        and any(
+            value not in (None, 0)
+            for value in (
+                session_start_bytes,
+                session_total_bytes,
+                *committed_totals,
+            )
+        )
+    )
+
+    if not has_usable_checkpoint:
+        log.info(
+            f"No usable system counter checkpoint for '{system_name}'; "
+            f"initializing baseline to {system_bytes}."
+        )
+        sqlm.update_session_start_bytes(
+            system_bytes, system_name=system_name, db_path=db_path
+        )
+        sqlm.wipe_session_total_bytes(system_name=system_name, db_path=db_path)
+        return 0
+
+    byte_delta = calculate_byte_delta(
+        system_bytes, system_name=system_name, db_path=db_path
+    )
+    if byte_delta > 0:
+        sqlm.update_system_bytes_usage(byte_delta, system_name, db_path)
+
+    return byte_delta
+
+
 def initialize_user_state_nftables(username, throttling=False):
 
     exceeds_quota, _, _ = evaluate_user_bytes_against_quota(username)
