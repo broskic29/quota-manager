@@ -458,6 +458,14 @@ def checkpoint_all_logged_in_users(db_path=None):
     return checkpoints
 
 
+def checkpoint_monthly_usage(db_path=None):
+    """Persist available user and system deltas before a monthly reset."""
+    db_path = db_path or sqlh.USAGE_TRACKING_DB_PATH
+    checkpoints = checkpoint_all_logged_in_users(db_path=db_path)
+    update_total_system_bytes(db_path=db_path)
+    return checkpoints
+
+
 def update_all_users_bytes(old_usage_dict, db_path=sqlh.USAGE_TRACKING_DB_PATH):
 
     usage_dict = {}
@@ -488,7 +496,7 @@ def update_total_system_bytes(db_path=sqlh.USAGE_TRACKING_DB_PATH):
 
     log.debug(f"update_total_system_bytes: system_bytes: {system_bytes}")
 
-    config = sqlm.fetch_active_config()
+    config = sqlm.fetch_active_config(db_path)
 
     if config is None:
         log.warning("update_total_system_bytes: System config not loaded.")
@@ -497,7 +505,9 @@ def update_total_system_bytes(db_path=sqlh.USAGE_TRACKING_DB_PATH):
     system_name = config["system_name"]
 
     if system_bytes is not None:
-        byte_delta = calculate_byte_delta(system_bytes, system_name=system_name)
+        byte_delta = calculate_byte_delta(
+            system_bytes, system_name=system_name, db_path=db_path
+        )
         sqlm.update_system_bytes_usage(byte_delta, system_name, db_path)
         sqlm.update_user_bytes_usage
 

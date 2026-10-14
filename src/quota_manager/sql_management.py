@@ -233,10 +233,26 @@ def init_usage_db():
             session_start_bytes INTEGER,
             session_total_bytes INTEGER,
             daily_budget_bytes INTEGER,
+            last_monthly_reset_date TEXT,
             UNIQUE(system_name)
         );
         """
         )
+
+        system_state_columns = {
+            row[1]
+            for row in cur.execute(
+                f"PRAGMA table_info({SYSTEM_STATE_TABLE_NAME})"
+            ).fetchall()
+        }
+        if "last_monthly_reset_date" not in system_state_columns:
+            cur.execute(
+                f"ALTER TABLE {SYSTEM_STATE_TABLE_NAME} "
+                "ADD COLUMN last_monthly_reset_date TEXT"
+            )
+            log.info(
+                "Added nullable monthly reset marker to existing system state."
+            )
 
         con.commit()
         con.close()
@@ -1202,7 +1218,7 @@ def fetch_system_state_row(db_path=None):
     cur = con.cursor()
     cur.execute(
         f"""
-        SELECT system_name, system_date, wiped_this_month, total_daily_bytes, total_monthly_bytes, all_time_bytes, num_users, num_groups, total_system_monthly_bytes, session_start_bytes, session_total_bytes, daily_budget_bytes
+        SELECT system_name, system_date, wiped_this_month, total_daily_bytes, total_monthly_bytes, all_time_bytes, num_users, num_groups, total_system_monthly_bytes, session_start_bytes, session_total_bytes, daily_budget_bytes, last_monthly_reset_date
         FROM {SYSTEM_STATE_TABLE_NAME}
         WHERE system_name = ?
         LIMIT 1
@@ -1246,6 +1262,8 @@ def fetch_system_state(db_path=None) -> dict:
         "total_system_monthly_bytes": row[8],
         "session_start_bytes": row[9],
         "session_total_bytes": row[10],
+        "daily_budget_bytes": row[11],
+        "last_monthly_reset_date": row[12],
     }
 
     return cfg
@@ -2255,6 +2273,83 @@ def usage_monthly_wipe(db_path=None):
     con.close()
 
     log.info("Monthly wipe complete.")
+
+
+def initialize_monthly_reset_marker(boundary_date, db_path=None):
+    """Set a conservative migration baseline without changing usage totals."""
+    db_path = db_path or sqlh.USAGE_TRACKING_DB_PATH
+    config = fetch_active_config(db_path)
+    system_name = config["system_name"]
+
+    con = sqlite3.connect(db_path, timeout=30, isolation_level=None)
+    try:
+        cur = con.cursor()
+        cur.execute("BEGIN IMMEDIATE")
+        cur.execute(
+            f"""
+            UPDATE {SYSTEM_STATE_TABLE_NAME}
+            SET last_monthly_reset_date = ?
+            WHERE system_name = ? AND last_monthly_reset_date IS NULL
+            """,
+            (boundary_date, system_name),
+        )
+        initialized = cur.rowcount == 1
+        con.commit()
+    except Exception:
+        con.rollback()
+        raise
+    finally:
+        con.close()
+
+    return initialized
+
+
+def usage_monthly_wipe_and_advance_marker(
+    new_boundary_date, expected_boundary_date, db_path=None
+):
+    """Atomically clear monthly totals and advance the completed boundary."""
+    db_path = db_path or sqlh.USAGE_TRACKING_DB_PATH
+    config = fetch_active_config(db_path)
+    system_name = config["system_name"]
+
+    con = sqlite3.connect(db_path, timeout=30, isolation_level=None)
+    try:
+        cur = con.cursor()
+        cur.execute("BEGIN IMMEDIATE")
+        cur.execute(
+            f"""
+            UPDATE {SYSTEM_STATE_TABLE_NAME}
+            SET total_monthly_bytes = 0,
+                total_system_monthly_bytes = 0,
+                last_monthly_reset_date = ?
+            WHERE system_name = ? AND last_monthly_reset_date = ?
+            """,
+            (new_boundary_date, system_name, expected_boundary_date),
+        )
+
+        if cur.rowcount != 1:
+            con.rollback()
+            return False
+
+        cur.execute(
+            f"""
+            UPDATE {USAGE_TRACKING_TABLE_NAME}
+            SET monthly_usage_bytes = 0
+            """
+        )
+        con.commit()
+    except Exception:
+        con.rollback()
+        raise
+    finally:
+        con.close()
+
+    log.info(
+        "Monthly wipe complete; billing boundary advanced from %s to %s.",
+        expected_boundary_date,
+        new_boundary_date,
+    )
+    return True
 
 
 def fetch_daily_system_bytes(db_path=None):

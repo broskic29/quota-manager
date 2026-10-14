@@ -19,8 +19,16 @@ DAILY_RESET_DEFERRED_CLOCK = "deferred_clock"
 DAILY_RESET_BUSY = "busy"
 DAILY_RESET_FAILED = "failed"
 
+MONTHLY_RESET_COMPLETED = "completed"
+MONTHLY_RESET_NOT_DUE = "not_due"
+MONTHLY_RESET_DEFERRED_CLOCK = "deferred_clock"
+MONTHLY_RESET_BUSY = "busy"
+MONTHLY_RESET_FAILED = "failed"
+MONTHLY_RESET_BASELINED = "baseline_initialized"
+
 USAGE_TRACKER_STARTED_AT = time.monotonic()
 _LAST_DAILY_RESET_RESULT = None
+_LAST_MONTHLY_RESET_RESULT = None
 
 log = logging.getLogger(__name__)
 
@@ -67,19 +75,12 @@ def event_scheduler(stop_event: threading.Event):
         # After waking up, determine which tasks to run
         now = dt.datetime.now(tz)
 
-        if now.day == qm.ACCOUNT_BILLING_DAY:
-            try:
-                monthly_events()
-                qm.update_monthly_wipe()
-            except Exception as e:
-                log.debug(
-                    f"event_scheduler: Failed to execute monthly events, error: {e}"
-                )
-
         reconcile_daily_reset(now)
+        reconcile_monthly_reset(now)
 
 
-def _daily_reset_decision(now, system_state, startup_elapsed_seconds):
+def _clock_gate_decision(now, system_state, startup_elapsed_seconds):
+    """Return whether persisted time makes the local wall clock trustworthy."""
     stored_date_text = system_state.get("system_date") if system_state else None
     try:
         stored_date = dt.date.fromisoformat(stored_date_text)
@@ -91,10 +92,24 @@ def _daily_reset_decision(now, system_state, startup_elapsed_seconds):
     current_date = now.date()
     if current_date < stored_date:
         return stored_date_text, "clock_behind", DAILY_RESET_DEFERRED_CLOCK
-    if current_date == stored_date:
-        return stored_date_text, "same_date", DAILY_RESET_NOT_DUE
-    if startup_elapsed_seconds < DAILY_RESET_STARTUP_GRACE_SECONDS:
+    if (
+        current_date > stored_date
+        and startup_elapsed_seconds < DAILY_RESET_STARTUP_GRACE_SECONDS
+    ):
         return stored_date_text, "startup_grace", DAILY_RESET_DEFERRED_CLOCK
+
+    return stored_date_text, "clock_ready", None
+
+
+def _daily_reset_decision(now, system_state, startup_elapsed_seconds):
+    stored_date_text, decision, outcome = _clock_gate_decision(
+        now, system_state, startup_elapsed_seconds
+    )
+    if outcome is not None:
+        return stored_date_text, decision, outcome
+
+    if now.date().isoformat() == stored_date_text:
+        return stored_date_text, "same_date", DAILY_RESET_NOT_DUE
 
     return stored_date_text, "forward_date", None
 
@@ -262,24 +277,296 @@ def daily_events(now):
     return reconcile_daily_reset(now)
 
 
-def monthly_events():
+def most_recent_billing_boundary(now):
+    """Return the most recent configured billing-day boundary."""
+    current_date = now.date()
+    if current_date.day >= qm.ACCOUNT_BILLING_DAY:
+        return current_date.replace(day=qm.ACCOUNT_BILLING_DAY)
+
+    previous_month = current_date.replace(day=1) - dt.timedelta(days=1)
+    return previous_month.replace(day=qm.ACCOUNT_BILLING_DAY)
+
+
+def _monthly_reset_decision(now, system_state, startup_elapsed_seconds):
+    _, clock_decision, clock_outcome = _clock_gate_decision(
+        now, system_state, startup_elapsed_seconds
+    )
+    current_boundary = most_recent_billing_boundary(now)
+    current_boundary_text = current_boundary.isoformat()
+    stored_boundary_text = (
+        system_state.get("last_monthly_reset_date") if system_state else None
+    )
+
+    if clock_outcome is not None:
+        return (
+            stored_boundary_text,
+            current_boundary_text,
+            clock_decision,
+            MONTHLY_RESET_DEFERRED_CLOCK,
+        )
+
+    if stored_boundary_text is None:
+        return None, current_boundary_text, "missing_marker", None
+
+    try:
+        stored_boundary = dt.date.fromisoformat(stored_boundary_text)
+    except (TypeError, ValueError) as e:
+        raise ValueError(
+            f"Invalid persisted monthly reset boundary: {stored_boundary_text!r}"
+        ) from e
+
+    if current_boundary < stored_boundary:
+        return (
+            stored_boundary_text,
+            current_boundary_text,
+            "clock_behind_boundary",
+            MONTHLY_RESET_DEFERRED_CLOCK,
+        )
+    if current_boundary == stored_boundary:
+        return (
+            stored_boundary_text,
+            current_boundary_text,
+            "same_boundary",
+            MONTHLY_RESET_NOT_DUE,
+        )
+
+    return stored_boundary_text, current_boundary_text, "older_boundary", None
+
+
+def _log_monthly_reset_result(
+    stored_boundary, current_boundary, decision, outcome, level=None
+):
+    global _LAST_MONTHLY_RESET_RESULT
+    result = (stored_boundary, current_boundary, decision, outcome)
+    log_method = level or log.info
+    if result == _LAST_MONTHLY_RESET_RESULT:
+        log_method = log.debug
+    else:
+        _LAST_MONTHLY_RESET_RESULT = result
+
+    log_method(
+        "Monthly reset reconciliation: stored_boundary=%s "
+        "current_boundary=%s decision=%s outcome=%s",
+        stored_boundary,
+        current_boundary,
+        decision,
+        outcome,
+    )
+
+
+def _perform_monthly_reset(current_boundary, stored_boundary, db_path=None):
+    qm.checkpoint_monthly_usage(db_path=db_path)
+    log.info("User and system usage checkpoint complete before monthly reset.")
+    return sqlm.usage_monthly_wipe_and_advance_marker(
+        current_boundary, stored_boundary, db_path=db_path
+    )
+
+
+def reconcile_monthly_reset(now, *, startup_elapsed_seconds=None, db_path=None):
+    """Reconcile one due billing-period reset and return its outcome."""
+    if startup_elapsed_seconds is None:
+        startup_elapsed_seconds = max(
+            0.0, time.monotonic() - USAGE_TRACKER_STARTED_AT
+        )
+
+    try:
+        system_state = sqlm.fetch_system_state(db_path)
+        if system_state is None:
+            raise RuntimeError("System state does not exist.")
+        stored_boundary, current_boundary, decision, outcome = (
+            _monthly_reset_decision(
+                now, system_state, startup_elapsed_seconds
+            )
+        )
+    except Exception as e:
+        log.error(
+            "Monthly reset reconciliation failed before lock acquisition: %s", e
+        )
+        _log_monthly_reset_result(
+            None, None, "state_error", MONTHLY_RESET_FAILED, log.error
+        )
+        return MONTHLY_RESET_FAILED
+
+    if outcome is not None:
+        level = (
+            log.warning
+            if outcome == MONTHLY_RESET_DEFERRED_CLOCK
+            else log.info
+        )
+        _log_monthly_reset_result(
+            stored_boundary, current_boundary, decision, outcome, level
+        )
+        return outcome
 
     if not qm.RESET_LOCK.acquire(blocking=False):
-        return  # reset in progress, skip tick
+        _log_monthly_reset_result(
+            stored_boundary,
+            current_boundary,
+            "reset_lock_busy",
+            MONTHLY_RESET_BUSY,
+        )
+        return MONTHLY_RESET_BUSY
+
+    quota_lock_acquired = False
     try:
-        if not qm.QUOTA_LOCK.acquire(timeout=0.1):
-            return  # admin is changing groups/quotas; skip tick
+        quota_lock_acquired = qm.QUOTA_LOCK.acquire(blocking=False)
+        if not quota_lock_acquired:
+            _log_monthly_reset_result(
+                stored_boundary,
+                current_boundary,
+                "quota_lock_busy",
+                MONTHLY_RESET_BUSY,
+            )
+            return MONTHLY_RESET_BUSY
+
         try:
-            sqlm.usage_monthly_wipe()
+            system_state = sqlm.fetch_system_state(db_path)
+            if system_state is None:
+                raise RuntimeError("System state does not exist.")
+            stored_boundary, current_boundary, decision, outcome = (
+                _monthly_reset_decision(
+                    now, system_state, startup_elapsed_seconds
+                )
+            )
         except Exception as e:
-            log.error(f"monthly_events: Failed to execute daily events, error: {e}")
-            raise
-        finally:
-            qm.QUOTA_LOCK.release()
-            log.debug(f"monthly_events: Released QUOTA_LOCK")
+            log.error("Monthly reset reconciliation recheck failed: %s", e)
+            _log_monthly_reset_result(
+                None,
+                None,
+                "state_recheck_error",
+                MONTHLY_RESET_FAILED,
+                log.error,
+            )
+            return MONTHLY_RESET_FAILED
+
+        if outcome is not None:
+            level = (
+                log.warning
+                if outcome == MONTHLY_RESET_DEFERRED_CLOCK
+                else log.info
+            )
+            _log_monthly_reset_result(
+                stored_boundary,
+                current_boundary,
+                f"recheck_{decision}",
+                outcome,
+                level,
+            )
+            return outcome
+
+        if stored_boundary is None:
+            try:
+                initialized = sqlm.initialize_monthly_reset_marker(
+                    current_boundary, db_path=db_path
+                )
+            except Exception as e:
+                log.error("Monthly reset baseline initialization failed: %s", e)
+                _log_monthly_reset_result(
+                    None,
+                    current_boundary,
+                    "baseline_error",
+                    MONTHLY_RESET_FAILED,
+                    log.error,
+                )
+                return MONTHLY_RESET_FAILED
+
+            if initialized:
+                log.info(
+                    "Initialized conservative monthly reset migration baseline "
+                    "at %s without changing usage totals.",
+                    current_boundary,
+                )
+                _log_monthly_reset_result(
+                    None,
+                    current_boundary,
+                    "migration_baseline",
+                    MONTHLY_RESET_BASELINED,
+                )
+                return MONTHLY_RESET_BASELINED
+
+            latest_state = sqlm.fetch_system_state(db_path)
+            latest_boundary = (
+                latest_state.get("last_monthly_reset_date")
+                if latest_state
+                else None
+            )
+            if latest_boundary == current_boundary:
+                _log_monthly_reset_result(
+                    latest_boundary,
+                    current_boundary,
+                    "already_baselined",
+                    MONTHLY_RESET_NOT_DUE,
+                )
+                return MONTHLY_RESET_NOT_DUE
+
+            _log_monthly_reset_result(
+                latest_boundary,
+                current_boundary,
+                "baseline_marker_changed",
+                MONTHLY_RESET_FAILED,
+                log.error,
+            )
+            return MONTHLY_RESET_FAILED
+
+        try:
+            reset_committed = _perform_monthly_reset(
+                current_boundary, stored_boundary, db_path=db_path
+            )
+        except Exception as e:
+            log.error("Monthly reset reconciliation failed: %s", e)
+            _log_monthly_reset_result(
+                stored_boundary,
+                current_boundary,
+                "reset_error",
+                MONTHLY_RESET_FAILED,
+                log.error,
+            )
+            return MONTHLY_RESET_FAILED
+
+        if not reset_committed:
+            latest_state = sqlm.fetch_system_state(db_path)
+            latest_boundary = (
+                latest_state.get("last_monthly_reset_date")
+                if latest_state
+                else None
+            )
+            if latest_boundary == current_boundary:
+                _log_monthly_reset_result(
+                    latest_boundary,
+                    current_boundary,
+                    "already_committed",
+                    MONTHLY_RESET_NOT_DUE,
+                )
+                return MONTHLY_RESET_NOT_DUE
+
+            _log_monthly_reset_result(
+                latest_boundary,
+                current_boundary,
+                "marker_changed",
+                MONTHLY_RESET_FAILED,
+                log.error,
+            )
+            return MONTHLY_RESET_FAILED
+
+        _log_monthly_reset_result(
+            stored_boundary,
+            current_boundary,
+            "older_boundary",
+            MONTHLY_RESET_COMPLETED,
+        )
+        return MONTHLY_RESET_COMPLETED
     finally:
+        if quota_lock_acquired:
+            qm.QUOTA_LOCK.release()
         qm.RESET_LOCK.release()
-        log.debug(f"monthly_events: Released RESET_LOCK")
+
+
+def monthly_events(now=None):
+    """Compatibility entry point; all monthly resets use the coordinator."""
+    if now is None:
+        tz = dt.timezone(dt.timedelta(hours=UTC_OFFSET))
+        now = dt.datetime.now(tz)
+    return reconcile_monthly_reset(now)
 
 
 def usage_updater(stop_event: threading.Event):
@@ -308,6 +595,7 @@ def usage_updater(stop_event: threading.Event):
         tz = dt.timezone(dt.timedelta(hours=UTC_OFFSET))
         now = dt.datetime.now(tz)
         reconcile_daily_reset(now)
+        reconcile_monthly_reset(now)
 
         reset_lock_acquired = qm.RESET_LOCK.acquire(blocking=False)
         if not reset_lock_acquired:
@@ -319,21 +607,6 @@ def usage_updater(stop_event: threading.Event):
                 continue  # admin is changing groups/quotas; skip tick
             # log.debug(f"usage_updater: Acquired QUOTA_LOCK")
             try:
-                try:
-                    system_monthly_wiped = qm.system_monthly_wipe_check()
-                    if not system_monthly_wiped:
-                        log.debug(
-                            "System monthly wipe check returned false, wiping system..."
-                        )
-
-                        monthly_events()
-                        qm.update_monthly_wipe()
-                except Exception as e:
-                    log.debug(
-                        f"usage_updater: Failed to execute monthly events, error: {e}"
-                    )
-                    raise
-
                 log.debug("Updating user byte totals...")
                 usage_dict = qm.update_all_users_bytes(usage_dict)
 
@@ -371,8 +644,10 @@ def usage_updater(stop_event: threading.Event):
 def start_usage_tracking(stop_event: threading.Event):
     """Start the wipe scheduler and usage updater threads"""
     global USAGE_TRACKER_STARTED_AT, _LAST_DAILY_RESET_RESULT
+    global _LAST_MONTHLY_RESET_RESULT
     USAGE_TRACKER_STARTED_AT = time.monotonic()
     _LAST_DAILY_RESET_RESULT = None
+    _LAST_MONTHLY_RESET_RESULT = None
 
     t_wipe_scheduler = threading.Thread(
         target=event_scheduler, args=(stop_event,), daemon=True
