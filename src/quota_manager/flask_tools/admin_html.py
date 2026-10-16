@@ -401,6 +401,29 @@ admin_landing_page = """
         background-color: #0056b3;
     }
 
+    .button-grid button.manual-reset {
+        background-color: #8a5a00;
+    }
+
+    .button-grid button.manual-reset:hover {
+        background-color: #684400;
+    }
+
+    .button-grid button.danger {
+        background-color: #c92a2a;
+    }
+
+    .button-grid button.danger:hover {
+        background-color: #a61e1e;
+    }
+
+    .button-note {
+        display: block;
+        font-size: 0.78rem;
+        font-weight: 500;
+        opacity: 0.9;
+    }
+
     .button-grid button {
         flex-direction: column;
     }
@@ -435,10 +458,17 @@ admin_landing_page = """
             <a href="/admin/config">
                 <button><i class="fa-solid fa-sliders"></i> System Config</button>
             </a>
+            <a href="/admin/manual-usage-reset">
+                <button class="manual-reset">
+                    <span><i class="fa-solid fa-rotate-left"></i> Manual Usage Reset</span>
+                    <span class="button-note">Clears selected usage totals only</span>
+                </button>
+            </a>
             <form method="post" action="/admin/reset"
-                  onsubmit="return confirm('This action will delete all user information. Are you sure you want to reset?');">
+                  onsubmit="return confirm('This deletes all user accounts and all usage information. Continue?');">
                 <button type="submit" class="danger">
-                    <i class="fa-solid fa-triangle-exclamation"></i> Reset System
+                    <span><i class="fa-solid fa-triangle-exclamation"></i> Delete All Accounts and Usage</span>
+                    <span class="button-note">Factory reset — this cannot be undone</span>
                 </button>
             </form>
         </div>
@@ -1398,6 +1428,282 @@ admin_usage_template = """
       </table>
     </div>
   </div>
+</body>
+</html>
+"""
+
+
+manual_usage_reset_page = """
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Manual Usage Reset</title>
+  <style>
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      background: #f4f6f8;
+      color: #242424;
+      font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+    }
+
+    .page {
+      width: min(920px, calc(100% - 28px));
+      margin: 28px auto;
+    }
+
+    .header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 18px;
+      margin-bottom: 18px;
+    }
+
+    h1 {
+      margin: 0;
+      font-size: clamp(1.8rem, 4vw, 2.6rem);
+    }
+
+    .back-link {
+      color: #0672df;
+      font-weight: 700;
+      text-decoration: none;
+      white-space: nowrap;
+    }
+
+    .notice {
+      margin-bottom: 18px;
+      padding: 16px 18px;
+      border: 1px solid #9ac5ee;
+      border-radius: 12px;
+      background: #eaf4ff;
+      color: #123b63;
+      line-height: 1.5;
+    }
+
+    .notice strong { display: block; margin-bottom: 4px; }
+
+    .message,
+    .error {
+      margin-bottom: 18px;
+      padding: 13px 15px;
+      border-radius: 10px;
+      font-weight: 700;
+    }
+
+    .message {
+      color: #155724;
+      background: #d4edda;
+      border: 1px solid #a9d6b3;
+    }
+
+    .error {
+      color: #842029;
+      background: #f8d7da;
+      border: 1px solid #f1aeb5;
+    }
+
+    .card {
+      margin-bottom: 18px;
+      padding: 22px;
+      border: 1px solid #dfe4ea;
+      border-radius: 14px;
+      background: white;
+      box-shadow: 0 4px 16px rgba(0, 0, 0, 0.06);
+    }
+
+    .card h2 { margin: 0 0 8px; font-size: 1.35rem; }
+    .card p { margin: 0 0 16px; color: #555; line-height: 1.45; }
+
+    .global-daily { border-left: 6px solid #d18b00; }
+    .global-monthly { border-left: 6px solid #b42318; }
+
+    .fields {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 14px;
+      margin-bottom: 14px;
+    }
+
+    label {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      color: #333;
+      font-weight: 700;
+    }
+
+    select,
+    input[type="text"] {
+      width: 100%;
+      padding: 11px 12px;
+      border: 1px solid #b9c1cc;
+      border-radius: 8px;
+      background: white;
+      font: inherit;
+    }
+
+    .confirmation {
+      margin: 12px 0 14px;
+      padding: 12px;
+      border-radius: 9px;
+      background: #f7f8fa;
+      color: #333;
+      line-height: 1.45;
+    }
+
+    code {
+      display: inline-block;
+      padding: 2px 6px;
+      border-radius: 5px;
+      background: #e8ebef;
+      color: #222;
+      font-weight: 800;
+    }
+
+    button {
+      padding: 11px 16px;
+      border: 0;
+      border-radius: 8px;
+      color: white;
+      background: #1769aa;
+      cursor: pointer;
+      font-size: 1rem;
+      font-weight: 800;
+    }
+
+    button:hover { filter: brightness(0.9); }
+    button.daily { background: #9a6500; }
+    button.monthly { background: #b42318; }
+    button:disabled { cursor: not-allowed; opacity: 0.55; }
+
+    .small {
+      margin-top: 10px;
+      color: #666;
+      font-size: 0.9rem;
+    }
+
+    @media (max-width: 650px) {
+      .header { align-items: flex-start; flex-direction: column; }
+      .fields { grid-template-columns: 1fr; }
+      .card { padding: 17px; }
+    }
+  </style>
+</head>
+<body>
+  <main class="page">
+    <div class="header">
+      <h1>Manual Usage Reset</h1>
+      <a class="back-link" href="/admin">← Back to Admin Panel</a>
+    </div>
+
+    <div class="notice">
+      <strong>This page changes recorded usage counters only.</strong>
+      It does not delete user accounts, passwords, groups, or device information.
+      It does not reboot the Pi. This is separate from the red
+      <b>Delete All Accounts and Usage</b> factory-reset action.
+    </div>
+
+    {% if message %}
+      <div class="message" role="status">{{ message }}</div>
+    {% endif %}
+    {% if error %}
+      <div class="error" role="alert">{{ error }}</div>
+    {% endif %}
+
+    <section class="card">
+      <h2>1. Reset usage for one user</h2>
+      <p>
+        Choose the user and which recorded total to clear. The account remains
+        active. Resetting one user's monthly usage does not reduce the true
+        system traffic total.
+      </p>
+      <form method="post" action="/admin/manual-usage-reset/user">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <div class="fields">
+          <label>
+            User
+            <select name="username" required {% if not usernames %}disabled{% endif %}>
+              {% for username in usernames %}
+                <option value="{{ username }}">{{ username }}</option>
+              {% endfor %}
+            </select>
+          </label>
+          <label>
+            Usage to reset
+            <select name="scope" required>
+              <option value="{{ daily_scope }}">Daily usage</option>
+              <option value="{{ monthly_scope }}">Monthly usage</option>
+              <option value="{{ combined_scope }}">Daily + monthly usage</option>
+            </select>
+          </label>
+        </div>
+        {% if usernames %}
+          <div class="confirmation">
+            Type <code>{{ selected_confirmation }}</code> to confirm.
+          </div>
+          <label>
+            Confirmation phrase
+            <input type="text" name="confirmation" autocomplete="off" required>
+          </label>
+          <div style="margin-top: 14px;">
+            <button type="submit">Reset selected user's usage</button>
+          </div>
+        {% else %}
+          <p class="small">There are no users available to reset.</p>
+          <button type="button" disabled>Reset selected user's usage</button>
+        {% endif %}
+      </form>
+    </section>
+
+    <section class="card global-daily">
+      <h2>2. Reset daily usage for all users</h2>
+      <p>
+        Clears today's usage for every user. Monthly and all-time usage are kept.
+        The current trusted date is recorded so the automatic reset does not run
+        the same reset again.
+      </p>
+      <form method="post" action="/admin/manual-usage-reset/all/daily">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <div class="confirmation">
+          Type <code>{{ daily_confirmation }}</code> to confirm.
+        </div>
+        <label>
+          Confirmation phrase
+          <input type="text" name="confirmation" autocomplete="off" required>
+        </label>
+        <div style="margin-top: 14px;">
+          <button class="daily" type="submit">Reset daily usage for all users</button>
+        </div>
+      </form>
+    </section>
+
+    <section class="card global-monthly">
+      <h2>3. Reset monthly usage for all users</h2>
+      <p>
+        Clears monthly user totals and the true system monthly traffic total.
+        Daily and all-time usage are kept. The current billing boundary is
+        recorded so the automatic reset does not repeat it.
+      </p>
+      <form method="post" action="/admin/manual-usage-reset/all/monthly">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <div class="confirmation">
+          Type <code>{{ monthly_confirmation }}</code> to confirm.
+        </div>
+        <label>
+          Confirmation phrase
+          <input type="text" name="confirmation" autocomplete="off" required>
+        </label>
+        <div style="margin-top: 14px;">
+          <button class="monthly" type="submit">Reset monthly usage for all users</button>
+        </div>
+      </form>
+    </section>
+  </main>
 </body>
 </html>
 """

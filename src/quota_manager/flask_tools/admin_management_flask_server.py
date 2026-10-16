@@ -8,7 +8,9 @@ from flask import (
     session,
 )
 from sqlite3 import IntegrityError
+import hmac
 import logging
+import secrets
 
 import quota_manager.sql_management as sqlm
 import quota_manager.quota_management as qm
@@ -28,6 +30,91 @@ admin_management_app.secret_key = "donbosco1815"
 log = logging.getLogger(__name__)
 
 DEFAULT_PASSWORD = "password"
+
+MANUAL_RESET_CSRF_SESSION_KEY = "manual_usage_reset_csrf_token"
+MANUAL_RESET_SELECTED_CONFIRMATION = "RESET USER USAGE"
+MANUAL_RESET_ALL_DAILY_CONFIRMATION = "RESET ALL DAILY USAGE"
+MANUAL_RESET_ALL_MONTHLY_CONFIRMATION = "RESET ALL MONTHLY USAGE"
+
+
+def _manual_reset_admin_identity():
+    auth = request.authorization
+    if auth is None or not auth.username or not auth.username.strip():
+        return None
+    return auth.username.strip()
+
+
+def _manual_reset_csrf_token():
+    token = session.get(MANUAL_RESET_CSRF_SESSION_KEY)
+    if not token:
+        token = secrets.token_urlsafe(32)
+        session[MANUAL_RESET_CSRF_SESSION_KEY] = token
+    return token
+
+
+def _consume_valid_manual_reset_csrf_token():
+    expected = session.pop(MANUAL_RESET_CSRF_SESSION_KEY, None)
+    supplied = request.form.get("csrf_token", "")
+    return bool(
+        expected
+        and supplied
+        and hmac.compare_digest(str(expected), str(supplied))
+    )
+
+
+def _manual_reset_confirmation_matches(expected_phrase):
+    supplied = request.form.get("confirmation", "")
+    return hmac.compare_digest(supplied.strip(), expected_phrase)
+
+
+def _audit_manual_reset_route(identity, operation, target, scope, outcome):
+    log.info(
+        "Admin manual usage reset: administrator=%r operation=%r target=%r "
+        "scope=%r outcome=%r",
+        identity,
+        operation,
+        target,
+        scope,
+        outcome,
+    )
+
+
+def _set_manual_reset_error(message):
+    session.pop("message", None)
+    session["error"] = message
+
+
+def _set_manual_reset_outcome(outcome, success_message):
+    session.pop("message", None)
+    session.pop("error", None)
+
+    if outcome == qm.MANUAL_RESET_COMPLETED:
+        session["message"] = success_message
+    elif outcome == qm.MANUAL_RESET_BUSY:
+        session["error"] = (
+            "Another accounting or reset operation is busy. Nothing was reset; "
+            "please try again."
+        )
+    elif outcome == qm.MANUAL_RESET_DEFERRED_CLOCK:
+        session["error"] = (
+            "The reset was deferred because the system clock is not yet trusted. "
+            "Nothing was reset; please try again after the clock is correct."
+        )
+    elif outcome == qm.MANUAL_RESET_INVALID_USER:
+        session["error"] = (
+            "The selected user no longer exists. Nothing was reset."
+        )
+    elif outcome == qm.MANUAL_RESET_INVALID_SCOPE:
+        session["error"] = "The selected reset type is invalid. Nothing was reset."
+    else:
+        session["error"] = (
+            "The usage reset failed. Nothing was reset. Check the system logs "
+            "and try again."
+        )
+
+
+def _manual_reset_redirect():
+    return redirect(url_for("manual_usage_reset"), code=303)
 
 
 @admin_management_app.route("/")
@@ -855,6 +942,231 @@ def admin_usage():
             else 0.0
         ),
     )
+
+
+@admin_management_app.route("/admin/manual-usage-reset", methods=["GET"])
+@flu.require_admin_auth
+def manual_usage_reset():
+    message = session.pop("message", "") or ""
+    error = session.pop("error", "") or ""
+
+    try:
+        usernames = sorted(
+            sqlm.fetch_all_usernames_usage() or [], key=str.casefold
+        )
+    except Exception as e:
+        log.error("Failed to load users for manual usage reset page: %s", e)
+        usernames = []
+        error = (
+            error
+            or "Users could not be loaded. No reset can be performed right now."
+        )
+
+    return render_template_string(
+        ahtml.manual_usage_reset_page,
+        usernames=usernames,
+        message=message,
+        error=error,
+        csrf_token=_manual_reset_csrf_token(),
+        selected_confirmation=MANUAL_RESET_SELECTED_CONFIRMATION,
+        daily_confirmation=MANUAL_RESET_ALL_DAILY_CONFIRMATION,
+        monthly_confirmation=MANUAL_RESET_ALL_MONTHLY_CONFIRMATION,
+        daily_scope=qm.MANUAL_RESET_DAILY,
+        monthly_scope=qm.MANUAL_RESET_MONTHLY,
+        combined_scope=qm.MANUAL_RESET_DAILY_AND_MONTHLY,
+    )
+
+
+@admin_management_app.route(
+    "/admin/manual-usage-reset/user", methods=["POST"]
+)
+@flu.require_admin_auth
+def manual_reset_selected_user():
+    identity = _manual_reset_admin_identity()
+    username = (request.form.get("username") or "").strip()
+    scope = (request.form.get("scope") or "").strip()
+    operation = "selected_user"
+
+    if identity is None:
+        return Response(
+            "Administrator identity required",
+            401,
+            {"WWW-Authenticate": 'Basic realm="Admin"'},
+        )
+
+    if not _consume_valid_manual_reset_csrf_token():
+        outcome = "csrf_rejected"
+        _set_manual_reset_error(
+            "The security check failed or this form expired. Nothing was reset. "
+            "Reload the page and try again."
+        )
+        _audit_manual_reset_route(identity, operation, username, scope, outcome)
+        return _manual_reset_redirect()
+
+    if not _manual_reset_confirmation_matches(
+        MANUAL_RESET_SELECTED_CONFIRMATION
+    ):
+        outcome = "confirmation_rejected"
+        _set_manual_reset_error(
+            "The confirmation phrase did not match. Nothing was reset."
+        )
+        _audit_manual_reset_route(identity, operation, username, scope, outcome)
+        return _manual_reset_redirect()
+
+    allowed_scopes = {
+        qm.MANUAL_RESET_DAILY,
+        qm.MANUAL_RESET_MONTHLY,
+        qm.MANUAL_RESET_DAILY_AND_MONTHLY,
+    }
+    if scope not in allowed_scopes:
+        outcome = qm.MANUAL_RESET_INVALID_SCOPE
+        _set_manual_reset_outcome(outcome, "")
+        _audit_manual_reset_route(identity, operation, username, scope, outcome)
+        return _manual_reset_redirect()
+
+    try:
+        user_exists = bool(username) and sqlm.check_if_user_exists(username)
+    except Exception as e:
+        outcome = qm.MANUAL_RESET_FAILED
+        log.error("Manual usage reset user validation failed: %s", e)
+        _set_manual_reset_outcome(outcome, "")
+        _audit_manual_reset_route(identity, operation, username, scope, outcome)
+        return _manual_reset_redirect()
+
+    if not user_exists:
+        outcome = qm.MANUAL_RESET_INVALID_USER
+        _set_manual_reset_outcome(outcome, "")
+        _audit_manual_reset_route(identity, operation, username, scope, outcome)
+        return _manual_reset_redirect()
+
+    try:
+        outcome = qm.manual_reset_user_usage(
+            username,
+            scope,
+            audit_identity=identity,
+        )
+    except Exception:
+        log.exception(
+            "Manual usage reset backend raised unexpectedly for user %r.",
+            username,
+        )
+        outcome = qm.MANUAL_RESET_FAILED
+    scope_label = {
+        qm.MANUAL_RESET_DAILY: "Daily usage",
+        qm.MANUAL_RESET_MONTHLY: "Monthly usage",
+        qm.MANUAL_RESET_DAILY_AND_MONTHLY: "Daily and monthly usage",
+    }[scope]
+    _set_manual_reset_outcome(
+        outcome, f"{scope_label} was reset for {username}."
+    )
+    _audit_manual_reset_route(identity, operation, username, scope, outcome)
+    return _manual_reset_redirect()
+
+
+@admin_management_app.route(
+    "/admin/manual-usage-reset/all/daily", methods=["POST"]
+)
+@flu.require_admin_auth
+def manual_reset_all_daily():
+    identity = _manual_reset_admin_identity()
+    operation = "all_users_daily"
+    target = "all_users"
+
+    if identity is None:
+        return Response(
+            "Administrator identity required",
+            401,
+            {"WWW-Authenticate": 'Basic realm="Admin"'},
+        )
+
+    if not _consume_valid_manual_reset_csrf_token():
+        outcome = "csrf_rejected"
+        _set_manual_reset_error(
+            "The security check failed or this form expired. Nothing was reset. "
+            "Reload the page and try again."
+        )
+        _audit_manual_reset_route(
+            identity, operation, target, qm.MANUAL_RESET_DAILY, outcome
+        )
+        return _manual_reset_redirect()
+
+    if not _manual_reset_confirmation_matches(
+        MANUAL_RESET_ALL_DAILY_CONFIRMATION
+    ):
+        outcome = "confirmation_rejected"
+        _set_manual_reset_error(
+            "The confirmation phrase did not match. Nothing was reset."
+        )
+        _audit_manual_reset_route(
+            identity, operation, target, qm.MANUAL_RESET_DAILY, outcome
+        )
+        return _manual_reset_redirect()
+
+    try:
+        outcome = qm.manual_reset_all_daily_usage(audit_identity=identity)
+    except Exception:
+        log.exception("Manual daily reset backend raised unexpectedly.")
+        outcome = qm.MANUAL_RESET_FAILED
+    _set_manual_reset_outcome(
+        outcome, "Daily usage was reset for all users."
+    )
+    _audit_manual_reset_route(
+        identity, operation, target, qm.MANUAL_RESET_DAILY, outcome
+    )
+    return _manual_reset_redirect()
+
+
+@admin_management_app.route(
+    "/admin/manual-usage-reset/all/monthly", methods=["POST"]
+)
+@flu.require_admin_auth
+def manual_reset_all_monthly():
+    identity = _manual_reset_admin_identity()
+    operation = "all_users_monthly"
+    target = "all_users"
+
+    if identity is None:
+        return Response(
+            "Administrator identity required",
+            401,
+            {"WWW-Authenticate": 'Basic realm="Admin"'},
+        )
+
+    if not _consume_valid_manual_reset_csrf_token():
+        outcome = "csrf_rejected"
+        _set_manual_reset_error(
+            "The security check failed or this form expired. Nothing was reset. "
+            "Reload the page and try again."
+        )
+        _audit_manual_reset_route(
+            identity, operation, target, qm.MANUAL_RESET_MONTHLY, outcome
+        )
+        return _manual_reset_redirect()
+
+    if not _manual_reset_confirmation_matches(
+        MANUAL_RESET_ALL_MONTHLY_CONFIRMATION
+    ):
+        outcome = "confirmation_rejected"
+        _set_manual_reset_error(
+            "The confirmation phrase did not match. Nothing was reset."
+        )
+        _audit_manual_reset_route(
+            identity, operation, target, qm.MANUAL_RESET_MONTHLY, outcome
+        )
+        return _manual_reset_redirect()
+
+    try:
+        outcome = qm.manual_reset_all_monthly_usage(audit_identity=identity)
+    except Exception:
+        log.exception("Manual monthly reset backend raised unexpectedly.")
+        outcome = qm.MANUAL_RESET_FAILED
+    _set_manual_reset_outcome(
+        outcome, "Monthly usage was reset for all users."
+    )
+    _audit_manual_reset_route(
+        identity, operation, target, qm.MANUAL_RESET_MONTHLY, outcome
+    )
+    return _manual_reset_redirect()
 
 
 @admin_management_app.route("/admin/usage/<username>/drop", methods=["POST"])
