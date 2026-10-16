@@ -79,7 +79,7 @@ def event_scheduler(stop_event: threading.Event):
         reconcile_monthly_reset(now)
 
 
-def _clock_gate_decision(now, system_state, startup_elapsed_seconds):
+def clock_gate_decision(now, system_state, startup_elapsed_seconds):
     """Return whether persisted time makes the local wall clock trustworthy."""
     stored_date_text = system_state.get("system_date") if system_state else None
     try:
@@ -102,7 +102,7 @@ def _clock_gate_decision(now, system_state, startup_elapsed_seconds):
 
 
 def _daily_reset_decision(now, system_state, startup_elapsed_seconds):
-    stored_date_text, decision, outcome = _clock_gate_decision(
+    stored_date_text, decision, outcome = clock_gate_decision(
         now, system_state, startup_elapsed_seconds
     )
     if outcome is not None:
@@ -287,8 +287,8 @@ def most_recent_billing_boundary(now):
     return previous_month.replace(day=qm.ACCOUNT_BILLING_DAY)
 
 
-def _monthly_reset_decision(now, system_state, startup_elapsed_seconds):
-    _, clock_decision, clock_outcome = _clock_gate_decision(
+def monthly_reset_decision(now, system_state, startup_elapsed_seconds):
+    _, clock_decision, clock_outcome = clock_gate_decision(
         now, system_state, startup_elapsed_seconds
     )
     current_boundary = most_recent_billing_boundary(now)
@@ -374,7 +374,7 @@ def reconcile_monthly_reset(now, *, startup_elapsed_seconds=None, db_path=None):
         if system_state is None:
             raise RuntimeError("System state does not exist.")
         stored_boundary, current_boundary, decision, outcome = (
-            _monthly_reset_decision(
+            monthly_reset_decision(
                 now, system_state, startup_elapsed_seconds
             )
         )
@@ -424,7 +424,7 @@ def reconcile_monthly_reset(now, *, startup_elapsed_seconds=None, db_path=None):
             if system_state is None:
                 raise RuntimeError("System state does not exist.")
             stored_boundary, current_boundary, decision, outcome = (
-                _monthly_reset_decision(
+                monthly_reset_decision(
                     now, system_state, startup_elapsed_seconds
                 )
             )

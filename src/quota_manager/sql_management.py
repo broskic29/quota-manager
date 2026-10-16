@@ -2248,6 +2248,198 @@ def usage_daily_wipe_and_advance_date(
     return True
 
 
+def manual_reset_user_usage_atomic(
+    username, *, reset_daily, reset_monthly, db_path=None
+):
+    """Atomically forgive selected usage and adjust user-derived aggregates."""
+    if not reset_daily and not reset_monthly:
+        raise ValueError("At least one usage period must be selected.")
+
+    db_path = db_path or sqlh.USAGE_TRACKING_DB_PATH
+    config = fetch_active_config(db_path)
+    system_name = config["system_name"]
+
+    con = sqlite3.connect(db_path, timeout=30, isolation_level=None)
+    try:
+        cur = con.cursor()
+        cur.execute("BEGIN IMMEDIATE")
+        cur.execute(
+            f"""
+            SELECT daily_usage_bytes, monthly_usage_bytes
+            FROM {USAGE_TRACKING_TABLE_NAME}
+            WHERE username = ?
+            """,
+            (username,),
+        )
+        user_row = cur.fetchone()
+        if user_row is None:
+            con.rollback()
+            return None
+
+        daily_before = int(user_row[0] or 0)
+        monthly_before = int(user_row[1] or 0)
+
+        cur.execute(
+            f"""
+            SELECT total_daily_bytes, total_monthly_bytes
+            FROM {SYSTEM_STATE_TABLE_NAME}
+            WHERE system_name = ?
+            """,
+            (system_name,),
+        )
+        system_row = cur.fetchone()
+        if system_row is None:
+            raise SystemStateError(
+                f"System state for {system_name!r} does not exist."
+            )
+
+        system_daily_before = int(system_row[0] or 0)
+        system_monthly_before = int(system_row[1] or 0)
+
+        if reset_daily and reset_monthly:
+            cur.execute(
+                f"""
+                UPDATE {USAGE_TRACKING_TABLE_NAME}
+                SET daily_usage_bytes = 0,
+                    monthly_usage_bytes = 0
+                WHERE username = ?
+                """,
+                (username,),
+            )
+            cur.execute(
+                f"""
+                UPDATE {SYSTEM_STATE_TABLE_NAME}
+                SET total_daily_bytes = MAX(
+                        COALESCE(total_daily_bytes, 0) - ?, 0
+                    ),
+                    total_monthly_bytes = MAX(
+                        COALESCE(total_monthly_bytes, 0) - ?, 0
+                    )
+                WHERE system_name = ?
+                """,
+                (daily_before, monthly_before, system_name),
+            )
+        elif reset_daily:
+            cur.execute(
+                f"""
+                UPDATE {USAGE_TRACKING_TABLE_NAME}
+                SET daily_usage_bytes = 0
+                WHERE username = ?
+                """,
+                (username,),
+            )
+            cur.execute(
+                f"""
+                UPDATE {SYSTEM_STATE_TABLE_NAME}
+                SET total_daily_bytes = MAX(
+                        COALESCE(total_daily_bytes, 0) - ?, 0
+                    )
+                WHERE system_name = ?
+                """,
+                (daily_before, system_name),
+            )
+        else:
+            cur.execute(
+                f"""
+                UPDATE {USAGE_TRACKING_TABLE_NAME}
+                SET monthly_usage_bytes = 0
+                WHERE username = ?
+                """,
+                (username,),
+            )
+            cur.execute(
+                f"""
+                UPDATE {SYSTEM_STATE_TABLE_NAME}
+                SET total_monthly_bytes = MAX(
+                        COALESCE(total_monthly_bytes, 0) - ?, 0
+                    )
+                WHERE system_name = ?
+                """,
+                (monthly_before, system_name),
+            )
+
+        con.commit()
+    except Exception:
+        con.rollback()
+        raise
+    finally:
+        con.close()
+
+    return {
+        "daily_usage_bytes": daily_before,
+        "monthly_usage_bytes": monthly_before,
+        "system_daily_bytes": system_daily_before,
+        "system_monthly_bytes": system_monthly_before,
+    }
+
+
+def manual_daily_wipe_and_set_date(
+    new_system_date, expected_system_date, db_path=None
+):
+    """Atomically clear all daily totals and record the trusted date."""
+    db_path = db_path or sqlh.USAGE_TRACKING_DB_PATH
+    config = fetch_active_config(db_path)
+    system_name = config["system_name"]
+
+    con = sqlite3.connect(db_path, timeout=30, isolation_level=None)
+    try:
+        cur = con.cursor()
+        cur.execute("BEGIN IMMEDIATE")
+        cur.execute(
+            f"""
+            SELECT system_date, total_daily_bytes
+            FROM {SYSTEM_STATE_TABLE_NAME}
+            WHERE system_name = ?
+            """,
+            (system_name,),
+        )
+        system_row = cur.fetchone()
+        if system_row is None:
+            raise SystemStateError(
+                f"System state for {system_name!r} does not exist."
+            )
+        if system_row[0] != expected_system_date:
+            con.rollback()
+            return None
+
+        cur.execute(
+            f"""
+            SELECT COALESCE(SUM(daily_usage_bytes), 0)
+            FROM {USAGE_TRACKING_TABLE_NAME}
+            """
+        )
+        user_daily_before = int(cur.fetchone()[0] or 0)
+        system_daily_before = int(system_row[1] or 0)
+
+        cur.execute(
+            f"""
+            UPDATE {SYSTEM_STATE_TABLE_NAME}
+            SET total_daily_bytes = 0,
+                system_date = ?
+            WHERE system_name = ?
+            """,
+            (new_system_date, system_name),
+        )
+        cur.execute(
+            f"""
+            UPDATE {USAGE_TRACKING_TABLE_NAME}
+            SET daily_usage_bytes = 0
+            """
+        )
+        con.commit()
+    except Exception:
+        con.rollback()
+        raise
+    finally:
+        con.close()
+
+    return {
+        "user_daily_bytes": user_daily_before,
+        "system_daily_bytes": system_daily_before,
+        "system_date": expected_system_date,
+    }
+
+
 def usage_monthly_wipe(db_path=None):
     db_path = db_path or sqlh.USAGE_TRACKING_DB_PATH
     con = sqlite3.connect(
@@ -2350,6 +2542,77 @@ def usage_monthly_wipe_and_advance_marker(
         new_boundary_date,
     )
     return True
+
+
+def manual_monthly_wipe_and_set_boundary(
+    new_boundary_date, expected_boundary_date, db_path=None
+):
+    """Atomically clear all monthly totals and record the trusted boundary."""
+    db_path = db_path or sqlh.USAGE_TRACKING_DB_PATH
+    config = fetch_active_config(db_path)
+    system_name = config["system_name"]
+
+    con = sqlite3.connect(db_path, timeout=30, isolation_level=None)
+    try:
+        cur = con.cursor()
+        cur.execute("BEGIN IMMEDIATE")
+        cur.execute(
+            f"""
+            SELECT last_monthly_reset_date, total_monthly_bytes,
+                   total_system_monthly_bytes
+            FROM {SYSTEM_STATE_TABLE_NAME}
+            WHERE system_name = ?
+            """,
+            (system_name,),
+        )
+        system_row = cur.fetchone()
+        if system_row is None:
+            raise SystemStateError(
+                f"System state for {system_name!r} does not exist."
+            )
+        if system_row[0] != expected_boundary_date:
+            con.rollback()
+            return None
+
+        cur.execute(
+            f"""
+            SELECT COALESCE(SUM(monthly_usage_bytes), 0)
+            FROM {USAGE_TRACKING_TABLE_NAME}
+            """
+        )
+        user_monthly_before = int(cur.fetchone()[0] or 0)
+        system_monthly_before = int(system_row[1] or 0)
+        true_system_monthly_before = int(system_row[2] or 0)
+
+        cur.execute(
+            f"""
+            UPDATE {SYSTEM_STATE_TABLE_NAME}
+            SET total_monthly_bytes = 0,
+                total_system_monthly_bytes = 0,
+                last_monthly_reset_date = ?
+            WHERE system_name = ?
+            """,
+            (new_boundary_date, system_name),
+        )
+        cur.execute(
+            f"""
+            UPDATE {USAGE_TRACKING_TABLE_NAME}
+            SET monthly_usage_bytes = 0
+            """
+        )
+        con.commit()
+    except Exception:
+        con.rollback()
+        raise
+    finally:
+        con.close()
+
+    return {
+        "user_monthly_bytes": user_monthly_before,
+        "system_monthly_bytes": system_monthly_before,
+        "true_system_monthly_bytes": true_system_monthly_before,
+        "last_monthly_reset_date": expected_boundary_date,
+    }
 
 
 def fetch_daily_system_bytes(db_path=None):

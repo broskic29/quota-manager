@@ -50,6 +50,17 @@ from collections import defaultdict
 
 USER_LOCKS = defaultdict(threading.RLock)
 
+MANUAL_RESET_COMPLETED = "completed"
+MANUAL_RESET_BUSY = "busy"
+MANUAL_RESET_DEFERRED_CLOCK = "deferred_clock"
+MANUAL_RESET_FAILED = "failed"
+MANUAL_RESET_INVALID_USER = "invalid_user"
+MANUAL_RESET_INVALID_SCOPE = "invalid_scope"
+
+MANUAL_RESET_DAILY = "daily"
+MANUAL_RESET_MONTHLY = "monthly"
+MANUAL_RESET_DAILY_AND_MONTHLY = "daily_and_monthly"
+
 
 class RestrictedDayError(Exception):
     """Raised when an action is attempted on a restricted day."""
@@ -464,6 +475,465 @@ def checkpoint_monthly_usage(db_path=None):
     checkpoints = checkpoint_all_logged_in_users(db_path=db_path)
     update_total_system_bytes(db_path=db_path)
     return checkpoints
+
+
+def _log_manual_reset(
+    audit_identity, reset_type, target, before_values, outcome, decision=None
+):
+    log_method = log.error if outcome == MANUAL_RESET_FAILED else log.info
+    log_method(
+        "Manual usage reset: audit_identity=%s reset_type=%s target=%s "
+        "before=%s decision=%s outcome=%s",
+        audit_identity,
+        reset_type,
+        target,
+        before_values,
+        decision,
+        outcome,
+    )
+
+
+def _manual_reset_now(now):
+    if now is not None:
+        return now
+    tz = dt.timezone(dt.timedelta(hours=sqlh.UTC_OFFSET))
+    return dt.datetime.now(tz)
+
+
+def _manual_daily_clock_context(now, startup_elapsed_seconds, db_path):
+    # Local import avoids the quota_management <-> usage_tracker module cycle.
+    from quota_manager import usage_tracker as usage_tracker
+
+    if startup_elapsed_seconds is None:
+        startup_elapsed_seconds = max(
+            0.0, time.monotonic() - usage_tracker.USAGE_TRACKER_STARTED_AT
+        )
+
+    system_state = sqlm.fetch_system_state(db_path)
+    if system_state is None:
+        raise RuntimeError("System state does not exist.")
+    stored_date, decision, outcome = usage_tracker.clock_gate_decision(
+        now, system_state, startup_elapsed_seconds
+    )
+    return system_state, stored_date, decision, outcome
+
+
+def _manual_monthly_clock_context(now, startup_elapsed_seconds, db_path):
+    # Reuse the automatic coordinator's date and billing-boundary policy.
+    from quota_manager import usage_tracker as usage_tracker
+
+    if startup_elapsed_seconds is None:
+        startup_elapsed_seconds = max(
+            0.0, time.monotonic() - usage_tracker.USAGE_TRACKER_STARTED_AT
+        )
+
+    system_state = sqlm.fetch_system_state(db_path)
+    if system_state is None:
+        raise RuntimeError("System state does not exist.")
+    stored_boundary, current_boundary, decision, outcome = (
+        usage_tracker.monthly_reset_decision(
+            now, system_state, startup_elapsed_seconds
+        )
+    )
+    return system_state, stored_boundary, current_boundary, decision, outcome
+
+
+def manual_reset_user_usage(
+    username, scope, *, audit_identity, db_path=None
+):
+    """Reset one user's selected usage period without changing account state.
+
+    Locks are always attempted in RESET_LOCK -> QUOTA_LOCK -> USER_LOCK order,
+    matching the automatic reset and accounting coordinators.
+    """
+    db_path = db_path or sqlh.USAGE_TRACKING_DB_PATH
+    scope_flags = {
+        MANUAL_RESET_DAILY: (True, False),
+        MANUAL_RESET_MONTHLY: (False, True),
+        MANUAL_RESET_DAILY_AND_MONTHLY: (True, True),
+    }
+    if scope not in scope_flags:
+        _log_manual_reset(
+            audit_identity,
+            scope,
+            username,
+            None,
+            MANUAL_RESET_INVALID_SCOPE,
+            "unsupported_scope",
+        )
+        return MANUAL_RESET_INVALID_SCOPE
+
+    reset_daily, reset_monthly = scope_flags[scope]
+    if not RESET_LOCK.acquire(blocking=False):
+        _log_manual_reset(
+            audit_identity, scope, username, None, MANUAL_RESET_BUSY, "reset_lock_busy"
+        )
+        return MANUAL_RESET_BUSY
+
+    quota_lock_acquired = False
+    user_lock_acquired = False
+    user_lock = USER_LOCKS[username]
+    before_values = None
+    try:
+        quota_lock_acquired = QUOTA_LOCK.acquire(blocking=False)
+        if not quota_lock_acquired:
+            _log_manual_reset(
+                audit_identity,
+                scope,
+                username,
+                None,
+                MANUAL_RESET_BUSY,
+                "quota_lock_busy",
+            )
+            return MANUAL_RESET_BUSY
+
+        user_lock_acquired = user_lock.acquire(blocking=False)
+        if not user_lock_acquired:
+            _log_manual_reset(
+                audit_identity,
+                scope,
+                username,
+                None,
+                MANUAL_RESET_BUSY,
+                "user_lock_busy",
+            )
+            return MANUAL_RESET_BUSY
+
+        if not sqlm.check_if_user_exists(username, db_path=db_path):
+            _log_manual_reset(
+                audit_identity,
+                scope,
+                username,
+                None,
+                MANUAL_RESET_INVALID_USER,
+                "user_not_found",
+            )
+            return MANUAL_RESET_INVALID_USER
+
+        if sqlm.check_if_user_logged_in(username, db_path=db_path):
+            checkpoint = checkpoint_user_usage(username, db_path=db_path)
+            if checkpoint is None:
+                _log_manual_reset(
+                    audit_identity,
+                    scope,
+                    username,
+                    None,
+                    MANUAL_RESET_FAILED,
+                    "counter_unavailable",
+                )
+                return MANUAL_RESET_FAILED
+
+        before_values = sqlm.manual_reset_user_usage_atomic(
+            username,
+            reset_daily=reset_daily,
+            reset_monthly=reset_monthly,
+            db_path=db_path,
+        )
+        if before_values is None:
+            _log_manual_reset(
+                audit_identity,
+                scope,
+                username,
+                None,
+                MANUAL_RESET_INVALID_USER,
+                "user_disappeared",
+            )
+            return MANUAL_RESET_INVALID_USER
+
+        _log_manual_reset(
+            audit_identity,
+            scope,
+            username,
+            before_values,
+            MANUAL_RESET_COMPLETED,
+            "committed",
+        )
+        return MANUAL_RESET_COMPLETED
+    except Exception as e:
+        log.error(
+            "Manual usage reset error: reset_type=%s target=%s error=%s",
+            scope,
+            username,
+            e,
+        )
+        _log_manual_reset(
+            audit_identity,
+            scope,
+            username,
+            before_values,
+            MANUAL_RESET_FAILED,
+            "exception",
+        )
+        return MANUAL_RESET_FAILED
+    finally:
+        if user_lock_acquired:
+            user_lock.release()
+        if quota_lock_acquired:
+            QUOTA_LOCK.release()
+        RESET_LOCK.release()
+
+
+def manual_reset_all_daily_usage(
+    *, audit_identity, now=None, startup_elapsed_seconds=None, db_path=None
+):
+    """Checkpoint users, clear daily totals, and record a trusted date."""
+    db_path = db_path or sqlh.USAGE_TRACKING_DB_PATH
+    now = _manual_reset_now(now)
+    current_date = now.date().isoformat()
+    before_values = None
+
+    try:
+        system_state, stored_date, decision, outcome = _manual_daily_clock_context(
+            now, startup_elapsed_seconds, db_path
+        )
+        before_values = {
+            "system_date": stored_date,
+            "system_daily_bytes": system_state.get("total_daily_bytes"),
+        }
+    except Exception as e:
+        log.error("Manual daily reset clock check failed: %s", e)
+        _log_manual_reset(
+            audit_identity,
+            MANUAL_RESET_DAILY,
+            "all_users",
+            before_values,
+            MANUAL_RESET_FAILED,
+            "clock_state_error",
+        )
+        return MANUAL_RESET_FAILED
+
+    if outcome is not None:
+        _log_manual_reset(
+            audit_identity,
+            MANUAL_RESET_DAILY,
+            "all_users",
+            before_values,
+            MANUAL_RESET_DEFERRED_CLOCK,
+            decision,
+        )
+        return MANUAL_RESET_DEFERRED_CLOCK
+
+    if not RESET_LOCK.acquire(blocking=False):
+        _log_manual_reset(
+            audit_identity,
+            MANUAL_RESET_DAILY,
+            "all_users",
+            before_values,
+            MANUAL_RESET_BUSY,
+            "reset_lock_busy",
+        )
+        return MANUAL_RESET_BUSY
+
+    quota_lock_acquired = False
+    try:
+        quota_lock_acquired = QUOTA_LOCK.acquire(blocking=False)
+        if not quota_lock_acquired:
+            _log_manual_reset(
+                audit_identity,
+                MANUAL_RESET_DAILY,
+                "all_users",
+                before_values,
+                MANUAL_RESET_BUSY,
+                "quota_lock_busy",
+            )
+            return MANUAL_RESET_BUSY
+
+        system_state, stored_date, decision, outcome = _manual_daily_clock_context(
+            now, startup_elapsed_seconds, db_path
+        )
+        before_values = {
+            "system_date": stored_date,
+            "system_daily_bytes": system_state.get("total_daily_bytes"),
+        }
+        if outcome is not None:
+            _log_manual_reset(
+                audit_identity,
+                MANUAL_RESET_DAILY,
+                "all_users",
+                before_values,
+                MANUAL_RESET_DEFERRED_CLOCK,
+                f"recheck_{decision}",
+            )
+            return MANUAL_RESET_DEFERRED_CLOCK
+
+        checkpoint_all_logged_in_users(db_path=db_path)
+        before_values = sqlm.manual_daily_wipe_and_set_date(
+            current_date, stored_date, db_path=db_path
+        )
+        if before_values is None:
+            _log_manual_reset(
+                audit_identity,
+                MANUAL_RESET_DAILY,
+                "all_users",
+                None,
+                MANUAL_RESET_FAILED,
+                "date_marker_changed",
+            )
+            return MANUAL_RESET_FAILED
+
+        _log_manual_reset(
+            audit_identity,
+            MANUAL_RESET_DAILY,
+            "all_users",
+            before_values,
+            MANUAL_RESET_COMPLETED,
+            "committed",
+        )
+        return MANUAL_RESET_COMPLETED
+    except Exception as e:
+        log.error("Manual daily reset failed: %s", e)
+        _log_manual_reset(
+            audit_identity,
+            MANUAL_RESET_DAILY,
+            "all_users",
+            before_values,
+            MANUAL_RESET_FAILED,
+            "exception",
+        )
+        return MANUAL_RESET_FAILED
+    finally:
+        if quota_lock_acquired:
+            QUOTA_LOCK.release()
+        RESET_LOCK.release()
+
+
+def manual_reset_all_monthly_usage(
+    *, audit_identity, now=None, startup_elapsed_seconds=None, db_path=None
+):
+    """Checkpoint user/system usage, clear monthly totals, and set the boundary."""
+    db_path = db_path or sqlh.USAGE_TRACKING_DB_PATH
+    now = _manual_reset_now(now)
+    before_values = None
+
+    try:
+        (
+            system_state,
+            stored_boundary,
+            current_boundary,
+            decision,
+            outcome,
+        ) = _manual_monthly_clock_context(now, startup_elapsed_seconds, db_path)
+        before_values = {
+            "last_monthly_reset_date": stored_boundary,
+            "system_monthly_bytes": system_state.get("total_monthly_bytes"),
+            "true_system_monthly_bytes": system_state.get(
+                "total_system_monthly_bytes"
+            ),
+        }
+    except Exception as e:
+        log.error("Manual monthly reset clock check failed: %s", e)
+        _log_manual_reset(
+            audit_identity,
+            MANUAL_RESET_MONTHLY,
+            "all_users",
+            before_values,
+            MANUAL_RESET_FAILED,
+            "clock_state_error",
+        )
+        return MANUAL_RESET_FAILED
+
+    from quota_manager import usage_tracker as usage_tracker
+
+    if outcome == usage_tracker.MONTHLY_RESET_DEFERRED_CLOCK:
+        _log_manual_reset(
+            audit_identity,
+            MANUAL_RESET_MONTHLY,
+            "all_users",
+            before_values,
+            MANUAL_RESET_DEFERRED_CLOCK,
+            decision,
+        )
+        return MANUAL_RESET_DEFERRED_CLOCK
+
+    if not RESET_LOCK.acquire(blocking=False):
+        _log_manual_reset(
+            audit_identity,
+            MANUAL_RESET_MONTHLY,
+            "all_users",
+            before_values,
+            MANUAL_RESET_BUSY,
+            "reset_lock_busy",
+        )
+        return MANUAL_RESET_BUSY
+
+    quota_lock_acquired = False
+    try:
+        quota_lock_acquired = QUOTA_LOCK.acquire(blocking=False)
+        if not quota_lock_acquired:
+            _log_manual_reset(
+                audit_identity,
+                MANUAL_RESET_MONTHLY,
+                "all_users",
+                before_values,
+                MANUAL_RESET_BUSY,
+                "quota_lock_busy",
+            )
+            return MANUAL_RESET_BUSY
+
+        (
+            system_state,
+            stored_boundary,
+            current_boundary,
+            decision,
+            outcome,
+        ) = _manual_monthly_clock_context(now, startup_elapsed_seconds, db_path)
+        before_values = {
+            "last_monthly_reset_date": stored_boundary,
+            "system_monthly_bytes": system_state.get("total_monthly_bytes"),
+            "true_system_monthly_bytes": system_state.get(
+                "total_system_monthly_bytes"
+            ),
+        }
+        if outcome == usage_tracker.MONTHLY_RESET_DEFERRED_CLOCK:
+            _log_manual_reset(
+                audit_identity,
+                MANUAL_RESET_MONTHLY,
+                "all_users",
+                before_values,
+                MANUAL_RESET_DEFERRED_CLOCK,
+                f"recheck_{decision}",
+            )
+            return MANUAL_RESET_DEFERRED_CLOCK
+
+        checkpoint_monthly_usage(db_path=db_path)
+        before_values = sqlm.manual_monthly_wipe_and_set_boundary(
+            current_boundary, stored_boundary, db_path=db_path
+        )
+        if before_values is None:
+            _log_manual_reset(
+                audit_identity,
+                MANUAL_RESET_MONTHLY,
+                "all_users",
+                None,
+                MANUAL_RESET_FAILED,
+                "boundary_marker_changed",
+            )
+            return MANUAL_RESET_FAILED
+
+        _log_manual_reset(
+            audit_identity,
+            MANUAL_RESET_MONTHLY,
+            "all_users",
+            before_values,
+            MANUAL_RESET_COMPLETED,
+            "committed",
+        )
+        return MANUAL_RESET_COMPLETED
+    except Exception as e:
+        log.error("Manual monthly reset failed: %s", e)
+        _log_manual_reset(
+            audit_identity,
+            MANUAL_RESET_MONTHLY,
+            "all_users",
+            before_values,
+            MANUAL_RESET_FAILED,
+            "exception",
+        )
+        return MANUAL_RESET_FAILED
+    finally:
+        if quota_lock_acquired:
+            QUOTA_LOCK.release()
+        RESET_LOCK.release()
 
 
 def update_all_users_bytes(old_usage_dict, db_path=sqlh.USAGE_TRACKING_DB_PATH):
