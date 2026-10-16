@@ -1436,6 +1436,10 @@ def gen_group_config_dict_for_sqt(
     if all(g["n"] <= 0 for g in group_config_dict.values()):
         return None
 
+    populated_groups = [g for g in group_config_dict.values() if g["n"] > 0]
+    if all(g["desired_quota_ratio"] == 0.0 for g in populated_groups):
+        return group_config_dict
+
     # Also some hidden behavior here. If n<= 0, max not incremented.
     group_config_dict = calculate_max_num_bytes(
         group_config_dict, total_daily_bytes_available

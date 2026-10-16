@@ -66,9 +66,26 @@ def validate_quota_config(cfg: dict) -> None:
             f"error_tol ({tol}) is >10 times smaller than step ({step})."
         )
 
-    active = [(name, g) for name, g in groups.items() if g.get("n", 0) > 0]
-    if not active:
+    desired_ratios = {}
+    for name, g in groups.items():
+        dr = float(g["desired_quota_ratio"])
+        if not math.isfinite(dr) or dr < 0.0:
+            raise QuotaConfigError(
+                f"{name}: desired_quota_ratio must be >= 0 and finite"
+            )
+        desired_ratios[name] = dr
+
+    populated = [(name, g) for name, g in groups.items() if g.get("n", 0) > 0]
+    if not populated:
         raise QuotaConfigError("All groups have n=0; nothing to allocate.")
+
+    # A populated group with an exact zero desired ratio is disabled. Its stale
+    # allocation constraints must not make the active allocation infeasible.
+    active = [
+        (name, g) for name, g in populated if desired_ratios[name] > 0.0
+    ]
+    if not active:
+        return
 
     # bounds + feasibility
     min_cost = 0.0
@@ -88,18 +105,13 @@ def validate_quota_config(cfg: dict) -> None:
             raise QuotaConfigError(f"{name}: min_num_bytes > max_num_bytes")
 
         mr = float(g["min_quota_ratio"])
-        dr = float(g["desired_quota_ratio"])
         if not math.isfinite(mr) or not (0.0 <= mr <= 1.0):
             raise QuotaConfigError(f"{name}: min_quota_ratio must be in [0,1]")
-        if not math.isfinite(dr) or dr < 0.0:
-            raise QuotaConfigError(
-                f"{name}: desired_quota_ratio must be >= 0 and finite"
-            )
 
         min_cost += vmin * n
         max_cost += vmax * n if vmax else 0
         min_r_sum += mr
-        desired_sum += dr
+        desired_sum += desired_ratios[name]
 
     if min_r_sum > 1.0 + tol:
         raise QuotaConfigError(
@@ -141,16 +153,20 @@ def quota_vector_generator(
       - minimizes weighted MSE against desired_r
     """
 
+    all_group_names = list(quota_config_dict["groups"])
+    zero_v_dict = {name: 0 for name in all_group_names}
+
     # Validate config first.
     try:
         validate_quota_config(quota_config_dict)
     except QuotaConfigError as e:
         log.error(f"quota_vector_generator: Unable to allocate quotas, error: {e}")
+        raise
     except InsufficientBytesError:
         log.info(
             f"quota_vector_generator: Insufficient bytes to allocate quotas. Setting all user quotas to 0."
         )
-        return {"v_dict": {name: 0 for name in quota_config_dict["groups"]}}
+        return {"v_dict": zero_v_dict}
 
     groups = [group for group in quota_config_dict["groups"]]
     weights = [group["n"] for group in quota_config_dict["groups"].values()]
@@ -177,25 +193,43 @@ def quota_vector_generator(
             round(quota_config_dict["daily_bytes"])
         )  # or already int
 
-    # Generate arrays of integers
+    # Generate the arrays needed to select allocation participants.
     weights = np.asarray(weights, dtype=int)
-    v_min = np.asarray([int(round(x)) for x in v_min], dtype=int)
-    v_max = np.asarray([int(round(x)) for x in v_max], dtype=int)
+    desired_r = np.asarray(desired_r, dtype=float)
 
-    desired_r = np.asarray([round(r, 2) for r in desired_r], dtype=float)
-    min_r = np.asarray(min_r, dtype=float)
-
-    # Filter for active groups only
-    active_idx = [k for k, w in enumerate(weights) if w > 0]
+    # Filter before converting bounds so disabled groups cannot participate in
+    # feasibility checks or fail allocation because of stale constraints.
+    active_idx = [
+        k for k, w in enumerate(weights) if w > 0 and desired_r[k] > 0.0
+    ]
 
     groups = [groups[k] for k in active_idx]
     weights = weights[active_idx]
-    v_min = v_min[active_idx]
-    v_max = v_max[active_idx]
-    desired_r = desired_r[active_idx]
-    min_r = min_r[active_idx]
+    v_min = [v_min[k] for k in active_idx]
+    v_max = [v_max[k] for k in active_idx]
+    desired_r = np.asarray(
+        [round(desired_r[k], 2) for k in active_idx], dtype=float
+    )
+    min_r = np.asarray([min_r[k] for k in active_idx], dtype=float)
     mse_weights = [mse_weights[k] for k in active_idx]  # keep as list if it has None
     n = len(weights)
+
+    def include_all_groups(values):
+        return {name: values.get(name, 0) for name in all_group_names}
+
+    if n == 0:
+        return {
+            "mse": 0.0,
+            "leftover_mb": float(total_daily_bytes) / 1024**2,
+            "sum_of_ratios": 0.0,
+            "unallocatable_mbytes": float(total_daily_bytes) / 1024**2,
+            "v_dict": zero_v_dict,
+            "r_dict": {name: 0 for name in all_group_names},
+            "failure": None,
+        }
+
+    v_min = np.asarray([int(round(x)) for x in v_min], dtype=int)
+    v_max = np.asarray([int(round(x)) for x in v_max], dtype=int)
 
     best = {
         "mse": float("inf"),
@@ -352,8 +386,8 @@ def quota_vector_generator(
                 "mse": 0.0,
                 "leftover_mb": 0.0,
                 "sum_of_ratios": 1.0,
-                "v_dict": {groups[0]: float(v)},
-                "r_dict": {groups[0]: 1.0},
+                "v_dict": include_all_groups({groups[0]: float(v)}),
+                "r_dict": include_all_groups({groups[0]: 1.0}),
                 "failure": None,
             }
         )
@@ -398,8 +432,12 @@ def quota_vector_generator(
 
             if mse < best["mse"]:
 
-                v_dict = {name: v for name, v in zip(groups, v.copy())}
-                r_dict = {name: r for name, r in zip(groups, r.copy())}
+                v_dict = include_all_groups(
+                    {name: v for name, v in zip(groups, v.copy())}
+                )
+                r_dict = include_all_groups(
+                    {name: r for name, r in zip(groups, r.copy())}
+                )
 
                 best = {
                     "mse": mse,
